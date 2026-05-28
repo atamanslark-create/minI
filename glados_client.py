@@ -111,6 +111,88 @@ class GLaDosClient:
             log.error(f"Error handling command {command}: {e}")
             return f"Error: {str(e)}"
 
+    async def execute_command(self, command: str, args: str = "") -> dict:
+        """
+        Execute a system command received from GLaDoS.
+
+        Args:
+            command: Command name (e.g., 'restart', 'cleanup')
+            args: Command arguments (e.g., 'nginx' for 'restart')
+
+        Returns:
+            Dict with 'success' bool and 'message' str
+        """
+        from agent import SystemAgent
+        import asyncio
+
+        try:
+            if command == "status":
+                cpu = SystemAgent.get_cpu_status()
+                mem = SystemAgent.get_memory_status()
+                uptime = SystemAgent.get_uptime()
+                return {
+                    'success': True,
+                    'message': f"CPU: {cpu['percent']}%, RAM: {mem['percent']}%, Uptime: {uptime}"
+                }
+
+            elif command == "restart" and args:
+                result = SystemAgent.manage_service(args, "restart")
+                return {
+                    'success': result['success'],
+                    'message': result['message']
+                }
+
+            elif command == "cleanup" and args == "logs":
+                result = SystemAgent.cleanup_logs()
+                return {
+                    'success': result['success'],
+                    'message': result['message']
+                }
+
+            elif command == "processes":
+                processes = SystemAgent.get_top_processes(limit=5)
+                lines = ["Top processes:"]
+                for proc in processes:
+                    lines.append(f"  {proc['name']}: {proc['cpu_percent']:.1f}%")
+                return {
+                    'success': True,
+                    'message': "\n".join(lines)
+                }
+
+            elif command == "reboot":
+                if args == "confirm":
+                    # Dangerous command - requires explicit confirmation
+                    result = SystemAgent.reboot_vps()
+                    return {
+                        'success': result['success'],
+                        'message': result['message']
+                    }
+                else:
+                    return {
+                        'success': False,
+                        'message': "Reboot requires confirmation argument"
+                    }
+
+            elif command == "speedtest":
+                result = SystemAgent.run_speedtest()
+                return {
+                    'success': result['success'],
+                    'message': result.get('output', result['message'])
+                }
+
+            else:
+                return {
+                    'success': False,
+                    'message': f"Unknown command: {command}"
+                }
+
+        except Exception as e:
+            log.error(f"Error executing command {command}: {e}")
+            return {
+                'success': False,
+                'message': f"Error: {str(e)}"
+            }
+
     async def close(self):
         """Close the bot session."""
         await self.glados_bot.session.close()

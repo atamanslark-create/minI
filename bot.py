@@ -6,6 +6,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, Conversati
 from config import CONFIG
 from agent import SystemAgent
 from alerts import AlertManager
+from alerts_extended import SmartAlertManager
 from metrics import MetricsCollector
 from report import ReportBot
 from utils import format_bytes, format_status_response
@@ -43,8 +44,35 @@ class VPSBot:
             try:
                 self.glados_client = GLaDosClient(glados_token, glados_owner_id)
                 logger.info("GLaDoS client initialized")
+                self._register_glados_commands()
             except Exception as e:
                 logger.warning(f"Failed to initialize GLaDoS client: {e}")
+
+    def _register_glados_commands(self):
+        """Register command handlers for GLaDoS."""
+        if not self.glados_client:
+            return
+
+        async def handle_status(args):
+            result = await self.glados_client.execute_command("status")
+            return result['message']
+
+        async def handle_restart(args):
+            result = await self.glados_client.execute_command("restart", args)
+            return result['message']
+
+        async def handle_cleanup(args):
+            result = await self.glados_client.execute_command("cleanup", args)
+            return result['message']
+
+        async def handle_processes(args):
+            result = await self.glados_client.execute_command("processes")
+            return result['message']
+
+        self.glados_client.register_command("status", handle_status)
+        self.glados_client.register_command("restart", handle_restart)
+        self.glados_client.register_command("cleanup", handle_cleanup)
+        self.glados_client.register_command("processes", handle_processes)
 
     def _get_available_services(self):
         """Get only services that exist on the system."""
@@ -668,25 +696,25 @@ class VPSBot:
         return MAIN_MENU
 
     async def monitor_alerts(self):
-        """Background task to monitor system and send alerts."""
+        """Background task to monitor system and send alerts with smart filtering."""
         while True:
             try:
-                alerts = AlertManager.check_alerts()
+                # Use SmartAlertManager for intelligent filtering and GLaDoS integration
+                alerts = SmartAlertManager.check_alerts(glados_client=self.glados_client)
 
                 for alert in alerts:
-                    # Only send critical and warning alerts
-                    if alert['severity'] in ['critical', 'warning', 'info']:
-                        message = AlertManager.format_alert(alert)
+                    # Send all alerts (SmartAlertManager handles filtering)
+                    message = SmartAlertManager.format_alert(alert)
 
-                        for admin_id in self.admin_ids:
-                            try:
-                                await self.app.bot.send_message(
-                                    chat_id=admin_id,
-                                    text=message,
-                                    parse_mode='Markdown'
-                                )
-                            except Exception as e:
-                                logger.error(f"Failed to send alert to {admin_id}: {str(e)}")
+                    for admin_id in self.admin_ids:
+                        try:
+                            await self.app.bot.send_message(
+                                chat_id=admin_id,
+                                text=message,
+                                parse_mode='Markdown'
+                            )
+                        except Exception as e:
+                            logger.error(f"Failed to send alert to {admin_id}: {str(e)}")
 
                 # Check every 60 seconds
                 await asyncio.sleep(60)
