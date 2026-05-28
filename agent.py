@@ -2,6 +2,7 @@ import psutil
 import subprocess
 import re
 from datetime import datetime, timedelta
+from network_checks import ping_host, check_port, check_ports, PingResult, PortResult
 
 class SystemAgent:
     """Collects system metrics and diagnostic information from VPS."""
@@ -159,28 +160,39 @@ class SystemAgent:
         return interfaces
 
     @staticmethod
-    def ping_host(host='8.8.8.8', count=3, timeout=4):
-        """Check internet connectivity using DNS lookup."""
+    async def ping_host_async(host='8.8.8.8', count=4, timeout=5):
+        """Check internet connectivity with packet loss detection."""
+        result = await ping_host(host, count, timeout)
+        return {
+            'status': 'OK' if result.reachable else 'FAILED',
+            'host': host,
+            'reachable': result.reachable,
+            'avg_ms': result.avg_ms,
+            'packet_loss_pct': result.packet_loss_pct,
+            'message': (
+                f'✅ Интернет доступен\n'
+                f'Host: {host}\n'
+                f'Ping: {result.avg_ms:.1f}ms\n'
+                f'Loss: {result.packet_loss_pct:.1f}%'
+                if result.reachable else
+                f'❌ Интернет недоступен\n'
+                f'Host: {host}\n'
+                f'Error: {result.error if result.error else "No response"}\n'
+                f'Loss: {result.packet_loss_pct:.1f}%'
+            )
+        }
+
+    @staticmethod
+    def ping_host_sync(host='8.8.8.8'):
+        """Sync wrapper for DNS-based connectivity check."""
         import socket
         try:
-            socket.setdefaulttimeout(timeout)
+            socket.setdefaulttimeout(4)
             socket.gethostbyname(host)
             return {
                 'status': 'OK',
                 'host': host,
-                'message': f'✅ Интернет доступен ({host})'
-            }
-        except socket.gaierror:
-            return {
-                'status': 'FAILED',
-                'host': host,
-                'message': f'❌ DNS недоступен (не могу разрешить {host})'
-            }
-        except socket.timeout:
-            return {
-                'status': 'FAILED',
-                'host': host,
-                'message': f'❌ Timeout при запросе к {host}'
+                'message': f'✅ DNS доступен ({host})'
             }
         except Exception as e:
             return {

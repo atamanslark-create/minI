@@ -38,9 +38,10 @@ class VPSBot:
         reply_keyboard = [
             ['📊 Статус VPS', '💾 Диски'],
             ['🔥 Топ процессов', '🧩 Сервисы'],
-            ['📡 Пинг', '⚡ Спидтест'],
-            ['🔐 WireGuard', '📈 Статистика'],
-            ['ℹ️ Инфо', '👥 SSH', '⚙️ Управление'],
+            ['📡 Пинг', '🔌 Порты'],
+            ['⚡ Спидтест', '📈 Статистика'],
+            ['🔐 WireGuard', 'ℹ️ Инфо'],
+            ['👥 SSH', '⚙️ Управление'],
         ]
         await update.message.reply_text(
             '🤖 *Меню мониторинга VPS*\n\nВыберите действие:',
@@ -288,15 +289,51 @@ class VPSBot:
         return MAIN_MENU
 
     async def ping_internet(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Check internet connectivity."""
+        """Check internet connectivity with packet loss."""
         try:
-            await update.message.reply_text('📡 Проверка связи...')
-            ping_result = SystemAgent.ping_host()
+            await update.message.reply_text('📡 Проверка связи... (это может занять 20 сек)')
 
-            if ping_result['status'] == 'OK':
-                response = f"✅ *Интернет доступен*\n\n{ping_result['message']}"
-            else:
-                response = f"❌ *Интернет недоступен*\n\n{ping_result['message']}"
+            # Try async ping first
+            try:
+                ping_result = await SystemAgent.ping_host_async()
+                response = f"{'✅' if ping_result['reachable'] else '❌'} *Интернет*\n\n{ping_result['message']}"
+            except:
+                # Fallback to sync DNS check
+                ping_result = SystemAgent.ping_host_sync()
+                response = f"{ping_result['message']}"
+
+            await update.message.reply_text(response, parse_mode='Markdown')
+        except Exception as e:
+            await update.message.reply_text(f'❌ Error: {str(e)}')
+
+        return MAIN_MENU
+
+    async def check_ports_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Check common service ports."""
+        try:
+            await update.message.reply_text('🔌 Проверка портов...')
+
+            from network_checks import check_ports
+
+            # Common service ports
+            ports_to_check = {
+                22: 'SSH',
+                80: 'HTTP',
+                443: 'HTTPS',
+                3306: 'MySQL',
+                5432: 'PostgreSQL',
+                6379: 'Redis',
+            }
+
+            results = await check_ports('localhost', list(ports_to_check.keys()), timeout=3.0)
+
+            response = "🔌 *Состояние портов*\n\n"
+            for result in results:
+                if result.port in ports_to_check:
+                    service = ports_to_check[result.port]
+                    status = '✅ OPEN' if result.open else '❌ CLOSED'
+                    latency = f" ({result.latency_ms}ms)" if result.latency_ms else ""
+                    response += f"{status} - {result.port}/TCP ({service}){latency}\n"
 
             await update.message.reply_text(response.strip(), parse_mode='Markdown')
         except Exception as e:
@@ -485,6 +522,8 @@ class VPSBot:
             return await self.services_menu(update, context)
         elif text == '📡 Пинг':
             return await self.ping_internet(update, context)
+        elif text == '🔌 Порты':
+            return await self.check_ports_cmd(update, context)
         elif text == '⚡ Спидтест':
             return await self.speedtest_menu(update, context)
         elif text == '🔐 WireGuard':
