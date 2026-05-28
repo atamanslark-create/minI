@@ -38,26 +38,19 @@ class VPSBot:
     def _get_available_services(self):
         """Get only services that exist on the system."""
         available = []
-        found_services = {}
 
-        # Try each service and its aliases
+        # Try each service and its aliases (silently)
         for service_name, aliases in self.service_aliases.items():
             for alias in aliases:
-                if SystemAgent.service_exists(alias):
-                    found_services[service_name] = alias
-                    available.append(alias)
-                    break
+                try:
+                    if SystemAgent.service_exists(alias):
+                        available.append(alias)
+                        break
+                except:
+                    pass
 
-        # At minimum, try to find SSH
-        if not any(s in available for s in ['ssh', 'sshd', 'openssh-server']):
-            # Try common SSH names if not found
-            for ssh_name in ['ssh', 'sshd', 'openssh-server']:
-                if SystemAgent.service_exists(ssh_name):
-                    available.append(ssh_name)
-                    break
-
-        logger.info(f"Available services: {available}")
-        return available if available else []
+        logger.info(f"Detected services: {available if available else 'none'}")
+        return available
 
     def is_admin(self, user_id):
         return user_id in self.admin_ids

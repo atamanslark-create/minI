@@ -115,7 +115,9 @@ class SystemAgent:
         """Get status of multiple services."""
         status = {}
         for service in services:
-            status[service] = SystemAgent.get_service_status(service)
+            # Only check services that exist
+            if SystemAgent.service_exists(service):
+                status[service] = SystemAgent.get_service_status(service)
         return status
 
     @staticmethod
