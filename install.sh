@@ -41,7 +41,7 @@ mkdir -p "$CONFIG_DIR"
 
 # Copy project files
 echo "📋 Copying project files..."
-cp bot.py agent.py config.py utils.py requirements.txt "$INSTALL_DIR/"
+cp bot.py agent.py config.py utils.py alerts.py metrics.py report.py requirements.txt "$INSTALL_DIR/"
 
 # Create virtual environment
 echo "🐍 Creating Python virtual environment..."
@@ -59,6 +59,10 @@ source "$VENV_DIR/bin/activate"
 echo "📦 Installing dependencies..."
 pip install --upgrade pip setuptools wheel
 pip install -r "$INSTALL_DIR/requirements.txt"
+
+# Install additional optional packages
+echo "📦 Installing optional packages..."
+pip install speedtest-cli requests -q 2>/dev/null || true
 
 # Create config file if it doesn't exist
 if [ ! -f "$CONFIG_DIR/config.yaml" ]; then
@@ -112,3 +116,32 @@ echo "1. Edit $CONFIG_DIR/config.yaml with your Telegram bot token and admin cha
 echo "2. Run: systemctl start mini-bot"
 echo "3. Check status: systemctl status mini-bot"
 echo ""
+
+# Send installation report
+echo "📨 Sending installation report..."
+HOSTNAME=$(hostname)
+PYTHON_VERSION=$($VENV_DIR/bin/python --version 2>&1)
+INSTALLED_PACKAGES=$($VENV_DIR/bin/pip list 2>/dev/null | wc -l)
+
+REPORT="
+Hostname: $HOSTNAME
+Python: $PYTHON_VERSION
+Packages installed: $INSTALLED_PACKAGES
+Installation directory: $INSTALL_DIR
+Config directory: $CONFIG_DIR
+"
+
+python3 << PYTHON_SCRIPT
+import sys
+sys.path.insert(0, '$INSTALL_DIR')
+try:
+    from report import ReportBot
+    ReportBot.send_install_report(
+        "$HOSTNAME",
+        "success",
+        "$REPORT"
+    )
+    print("✅ Report sent successfully")
+except Exception as e:
+    print(f"⚠️ Could not send report: {e}")
+PYTHON_SCRIPT

@@ -7,6 +7,7 @@ from config import CONFIG
 from agent import SystemAgent
 from alerts import AlertManager
 from metrics import MetricsCollector
+from report import ReportBot
 from utils import format_bytes, format_status_response
 
 logging.basicConfig(
@@ -309,34 +310,56 @@ class VPSBot:
             await update.message.reply_text('⚡ *Спидтест может занять 30-60 секунд...*\n\n⏳ Пожалуйста, ждите...', parse_mode='Markdown')
 
             result = subprocess.run(
-                ['/bin/sh', '-c', 'speedtest-cli --simple 2>/dev/null || echo "Speedtest not installed"'],
+                ['/bin/sh', '-c', 'speedtest-cli --simple 2>/dev/null || speedtest-cli 2>/dev/null || echo "ERROR: not installed"'],
                 capture_output=True,
                 text=True,
                 timeout=120
             )
 
-            if 'not installed' in result.stdout:
+            if 'ERROR: not installed' in result.stdout or 'not installed' in result.stderr:
                 response = "⚠️ *speedtest-cli не установлен*\n\nУстановите в venv:\n`sudo /opt/mini-bot/venv/bin/pip install speedtest-cli`"
                 await update.message.reply_text(response, parse_mode='Markdown')
             else:
+                # Parse both formats: --simple (3 numbers) and regular output
                 lines = [line.strip() for line in result.stdout.strip().split('\n') if line.strip()]
+
+                download, upload, ping = None, None, None
+
+                # Try to parse simple format (3 lines with numbers)
                 if len(lines) >= 3:
                     try:
                         download = float(lines[0])
                         upload = float(lines[1])
                         ping = float(lines[2])
+                    except ValueError:
+                        # Try to parse labeled format
+                        for line in lines:
+                            if 'Ping:' in line or 'ping' in line.lower():
+                                try:
+                                    ping = float(line.split()[1])
+                                except:
+                                    pass
+                            elif 'Download:' in line or 'download' in line.lower():
+                                try:
+                                    download = float(line.split()[1])
+                                except:
+                                    pass
+                            elif 'Upload:' in line or 'upload' in line.lower():
+                                try:
+                                    upload = float(line.split()[1])
+                                except:
+                                    pass
 
-                        response = f"""⚡ *Результаты спидтеста*
+                if download is not None and upload is not None and ping is not None:
+                    response = f"""⚡ *Результаты спидтеста*
 
 📥 Download: {download:.2f} Mbps
 📤 Upload: {upload:.2f} Mbps
 📡 Ping: {ping:.2f} ms
 """
-                        await update.message.reply_text(response.strip(), parse_mode='Markdown')
-                    except ValueError:
-                        await update.message.reply_text(f'❌ Ошибка парсинга результатов:\n`{result.stdout}`', parse_mode='Markdown')
+                    await update.message.reply_text(response.strip(), parse_mode='Markdown')
                 else:
-                    await update.message.reply_text(f'❌ Неожиданный формат результатов:\n`{result.stdout}`', parse_mode='Markdown')
+                    await update.message.reply_text(f'❌ Ошибка парсинга:\n`{result.stdout[:200]}`', parse_mode='Markdown')
 
         except subprocess.TimeoutExpired:
             await update.message.reply_text('⏱️ Спидтест истёк по времени (> 120 сек)')
@@ -559,6 +582,18 @@ class VPSBot:
         app.add_handler(conv_handler)
 
         logger.info('Bot started')
+
+        # Send startup report
+        try:
+            system_info = SystemAgent.get_system_info()
+            ReportBot.send_report(
+                "Bot Startup",
+                f"mini-bot успешно запущен\n\n*Hostname:* {system_info.get('hostname', 'Unknown')}\n*Kernel:* {system_info.get('kernel', 'Unknown')}",
+                "success"
+            )
+        except Exception as e:
+            logger.warning(f"Could not send startup report: {e}")
+
         app.run_polling()
 
 if __name__ == '__main__':
