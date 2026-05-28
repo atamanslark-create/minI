@@ -208,7 +208,79 @@ class SystemAgent:
             }
 
     @staticmethod
-    def get_wireguard_peers():
+    def manage_service(service_name, action):
+        """Manage systemd service (start, stop, restart)."""
+        valid_actions = ['start', 'stop', 'restart']
+        if action not in valid_actions:
+            return {'status': 'ERROR', 'message': f'Invalid action. Use: {", ".join(valid_actions)}'}
+
+        try:
+            result = subprocess.run(
+                ['systemctl', action, service_name],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+
+            if result.returncode == 0:
+                return {
+                    'status': 'OK',
+                    'message': f'Сервис {service_name} успешно {action}ed'
+                }
+            else:
+                return {
+                    'status': 'ERROR',
+                    'message': result.stderr.strip() if result.stderr else f'Failed to {action} {service_name}'
+                }
+        except subprocess.TimeoutExpired:
+            return {'status': 'ERROR', 'message': 'Command timeout'}
+        except Exception as e:
+            return {'status': 'ERROR', 'message': str(e)}
+
+    @staticmethod
+    def get_ssh_connections():
+        """Get active SSH connections."""
+        try:
+            result = subprocess.run(
+                ['ss', '-tunap'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+
+            connections = []
+            for line in result.stdout.split('\n'):
+                if 'ssh' in line.lower() or ':22' in line:
+                    connections.append(line)
+
+            return connections[:10] if connections else ['No SSH connections']
+        except Exception as e:
+            return [f'Error: {str(e)}']
+
+    @staticmethod
+    def get_system_info():
+        """Get detailed system information."""
+        try:
+            hostname = subprocess.run(
+                ['hostname'],
+                capture_output=True,
+                text=True,
+                timeout=2
+            ).stdout.strip()
+
+            kernel = subprocess.run(
+                ['uname', '-r'],
+                capture_output=True,
+                text=True,
+                timeout=2
+            ).stdout.strip()
+
+            return {
+                'hostname': hostname,
+                'kernel': kernel,
+            }
+        except Exception as e:
+            return {'error': str(e)}
         """Get WireGuard peers with handshake info."""
         try:
             result = subprocess.run(

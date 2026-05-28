@@ -3,6 +3,7 @@ import time
 from pathlib import Path
 from datetime import datetime
 from agent import SystemAgent
+from metrics import MetricsCollector
 
 STATUS_FILE = Path("/opt/mini-bot/status.json")
 
@@ -51,6 +52,9 @@ class AlertManager:
         }
 
         try:
+            # Initialize metrics DB on first run
+            MetricsCollector.init_db()
+
             # Check CPU
             cpu = SystemAgent.get_cpu_status()
             current_status['cpu_percent'] = cpu['percent']
@@ -139,6 +143,22 @@ class AlertManager:
 
         current_status['last_check'] = datetime.now().isoformat()
         AlertManager.save_status(current_status)
+
+        # Save metrics for statistics
+        if current_status.get('cpu_percent') is not None:
+            try:
+                uptime = SystemAgent.get_uptime()
+                uptime_seconds = int(uptime.split(':')[0]) * 3600 if ':' in uptime else 0
+                disk_percent = current_status.get('disk_percent', 0)
+
+                MetricsCollector.save_metric(
+                    current_status['cpu_percent'],
+                    current_status['memory_percent'] or 0,
+                    disk_percent,
+                    uptime_seconds
+                )
+            except:
+                pass
 
         return alerts
 

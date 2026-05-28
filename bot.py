@@ -6,6 +6,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, Conversati
 from config import CONFIG
 from agent import SystemAgent
 from alerts import AlertManager
+from metrics import MetricsCollector
 from utils import format_bytes, format_status_response
 
 logging.basicConfig(
@@ -37,8 +38,8 @@ class VPSBot:
             ['📊 Статус VPS', '💾 Диски'],
             ['🔥 Топ процессов', '🧩 Сервисы'],
             ['📡 Пинг', '⚡ Спидтест'],
-            ['🔐 WireGuard', '🩺 Диагностика'],
-            ['⚙️ Управление'],
+            ['🔐 WireGuard', '📈 Статистика'],
+            ['ℹ️ Инфо', '👥 SSH', '⚙️ Управление'],
         ]
         await update.message.reply_text(
             '🤖 *Меню мониторинга VPS*\n\nВыберите действие:',
@@ -118,7 +119,144 @@ class VPSBot:
                 emoji = '✅' if status == 'active' else '❌'
                 response += f"{emoji} {service}: {status}\n"
 
+            response += "\n💡 *Для управления* нажмите на сервис:\n"
+            buttons = []
+            for service in self.services:
+                buttons.append([f"🔄 {service}"])
+            buttons.append(["◀️ Назад"])
+
+            await update.message.reply_text(
+                response.strip(),
+                reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True),
+                parse_mode='Markdown'
+            )
+        except Exception as e:
+            await update.message.reply_text(f'❌ Error: {str(e)}')
+
+        return MAIN_MENU
+
+    async def manage_service(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show service management options."""
+        text = update.message.text
+        service_name = text.split()[-1] if '🔄' in text else None
+
+        if not service_name:
+            return MAIN_MENU
+
+        context.user_data['selected_service'] = service_name
+
+        buttons = [
+            ['▶️ Запустить', '⏹️ Остановить'],
+            ['🔄 Перезагрузить', '❌ Отмена'],
+        ]
+
+        await update.message.reply_text(
+            f"🧩 *Управление сервисом: {service_name}*\n\nВыберите действие:",
+            reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True),
+            parse_mode='Markdown'
+        )
+
+        return MAIN_MENU
+
+    async def execute_service_action(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Execute service action."""
+        text = update.message.text
+        service = context.user_data.get('selected_service')
+
+        if not service or '❌' in text:
+            await update.message.reply_text('❌ Отмена')
+            return MAIN_MENU
+
+        action_map = {
+            '▶️': 'start',
+            '⏹️': 'stop',
+            '🔄': 'restart',
+        }
+
+        action = None
+        for emoji, act in action_map.items():
+            if emoji in text:
+                action = act
+                break
+
+        if not action:
+            return MAIN_MENU
+
+        try:
+            result = SystemAgent.manage_service(service, action)
+
+            if result['status'] == 'OK':
+                response = f"✅ {result['message']}"
+            else:
+                response = f"❌ {result['message']}"
+
+            await update.message.reply_text(response, parse_mode='Markdown')
+        except Exception as e:
+            await update.message.reply_text(f'❌ Error: {str(e)}')
+
+        return MAIN_MENU
+
+    async def system_info(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show system information."""
+        try:
+            info = SystemAgent.get_system_info()
+            uptime = SystemAgent.get_uptime()
+
+            response = f"""ℹ️ *Информация о системе*
+
+*Hostname:* {info.get('hostname', 'Unknown')}
+*Kernel:* {info.get('kernel', 'Unknown')}
+*Uptime:* {uptime}
+"""
             await update.message.reply_text(response.strip(), parse_mode='Markdown')
+        except Exception as e:
+            await update.message.reply_text(f'❌ Error: {str(e)}')
+
+        return MAIN_MENU
+
+    async def ssh_connections(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show active SSH connections."""
+        try:
+            connections = SystemAgent.get_ssh_connections()
+            response = "👥 *Active SSH connections*\n\n"
+
+            if connections and connections[0] != 'No SSH connections':
+                for conn in connections:
+                    if conn.strip():
+                        response += f"`{conn[:60]}`\n"
+            else:
+                response += "No active SSH connections"
+
+            await update.message.reply_text(response, parse_mode='Markdown')
+        except Exception as e:
+            await update.message.reply_text(f'❌ Error: {str(e)}')
+
+        return MAIN_MENU
+
+    async def statistics(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show system statistics for the last 24 hours."""
+        try:
+            stats = MetricsCollector.get_stats(hours=24)
+
+            if stats:
+                response = f"""📈 *Статистика (последние 24 часа)*
+
+*CPU:*
+├─ Среднее: {stats['cpu_avg']}%
+└─ Максимум: {stats['cpu_max']}%
+
+*RAM:*
+├─ Среднее: {stats['memory_avg']}%
+└─ Максимум: {stats['memory_max']}%
+
+*Диск:*
+├─ Среднее: {stats['disk_avg']}%
+└─ Максимум: {stats['disk_max']}%
+"""
+            else:
+                response = "📈 *Статистика*\n\nЕще нет данных. Приходите позже."
+
+            await update.message.reply_text(response, parse_mode='Markdown')
         except Exception as e:
             await update.message.reply_text(f'❌ Error: {str(e)}')
 
@@ -326,8 +464,18 @@ class VPSBot:
             return await self.wireguard_status(update, context)
         elif text == '👥 Peers':
             return await self.wireguard_peers(update, context)
+        elif text == '📈 Статистика':
+            return await self.statistics(update, context)
+        elif text == 'ℹ️ Инфо':
+            return await self.system_info(update, context)
+        elif text == '👥 SSH':
+            return await self.ssh_connections(update, context)
         elif text == '🩺 Диагностика':
             return await self.diagnostics(update, context)
+        elif '🔄' in text:
+            return await self.manage_service(update, context)
+        elif text in ['▶️ Запустить', '⏹️ Остановить', '🔄 Перезагрузить']:
+            return await self.execute_service_action(update, context)
         elif text == '⚙️ Управление':
             return await self.manage_menu(update, context)
         elif text == '🧨 Удалить бота с VPS':
@@ -336,7 +484,7 @@ class VPSBot:
             return await self.start(update, context)
         elif text == '✅ Да, удалить':
             return await self.confirm_uninstall(update, context)
-        elif text == '❌ Отмена':
+        elif text == '❌ Отмена' or text == '❌ Отмена.':
             return await self.start(update, context)
 
         return MAIN_MENU
