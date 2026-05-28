@@ -2,6 +2,7 @@ import psutil
 import subprocess
 import re
 from datetime import datetime, timedelta
+from network_checks import ping_host, check_port, check_ports, PingResult, PortResult
 
 class SystemAgent:
     """Collects system metrics and diagnostic information from VPS."""
@@ -75,27 +76,48 @@ class SystemAgent:
         return processes[:limit]
 
     @staticmethod
-    def get_service_status(service_name):
-        """Get status of a systemd service."""
+    def service_exists(service_name):
+        """Check if systemd service exists."""
         try:
+            # Try to get service status - if it works, service exists
             result = subprocess.run(
-                ['systemctl', 'is-active', service_name],
+                ['/usr/bin/systemctl', 'show', '-p', 'Type', service_name],
                 capture_output=True,
                 text=True,
                 timeout=5
             )
-            return result.stdout.strip()
+            # If return code is 0 or output contains Type=, service exists
+            return result.returncode == 0 or 'Type=' in result.stdout
+        except:
+            return False
+
+    @staticmethod
+    def get_service_status(service_name):
+        """Get status of a systemd service."""
+        try:
+            result = subprocess.run(
+                ['/usr/bin/systemctl', 'is-active', service_name],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            status = result.stdout.strip()
+            if status == 'unknown':
+                return 'not-found'
+            return status
         except subprocess.TimeoutExpired:
             return 'timeout'
         except Exception as e:
-            return f'error: {str(e)}'
+            return 'error'
 
     @staticmethod
     def get_services_status(services):
         """Get status of multiple services."""
         status = {}
         for service in services:
-            status[service] = SystemAgent.get_service_status(service)
+            # Only check services that exist
+            if SystemAgent.service_exists(service):
+                status[service] = SystemAgent.get_service_status(service)
         return status
 
     @staticmethod
@@ -103,7 +125,7 @@ class SystemAgent:
         """Get failed systemd units."""
         try:
             result = subprocess.run(
-                ['systemctl', 'list-units', '--failed', '--no-pager'],
+                ['/usr/bin/systemctl', 'list-units', '--failed', '--no-pager'],
                 capture_output=True,
                 text=True,
                 timeout=10
@@ -159,28 +181,39 @@ class SystemAgent:
         return interfaces
 
     @staticmethod
-    def ping_host(host='8.8.8.8', count=3, timeout=4):
-        """Check internet connectivity using DNS lookup."""
+    async def ping_host_async(host='8.8.8.8', count=4, timeout=5):
+        """Check internet connectivity with packet loss detection."""
+        result = await ping_host(host, count, timeout)
+        return {
+            'status': 'OK' if result.reachable else 'FAILED',
+            'host': host,
+            'reachable': result.reachable,
+            'avg_ms': result.avg_ms,
+            'packet_loss_pct': result.packet_loss_pct,
+            'message': (
+                f'✅ Интернет доступен\n'
+                f'Host: {host}\n'
+                f'Ping: {result.avg_ms:.1f}ms\n'
+                f'Loss: {result.packet_loss_pct:.1f}%'
+                if result.reachable else
+                f'❌ Интернет недоступен\n'
+                f'Host: {host}\n'
+                f'Error: {result.error if result.error else "No response"}\n'
+                f'Loss: {result.packet_loss_pct:.1f}%'
+            )
+        }
+
+    @staticmethod
+    def ping_host_sync(host='8.8.8.8'):
+        """Sync wrapper for DNS-based connectivity check."""
         import socket
         try:
-            socket.setdefaulttimeout(timeout)
+            socket.setdefaulttimeout(4)
             socket.gethostbyname(host)
             return {
                 'status': 'OK',
                 'host': host,
-                'message': f'✅ Интернет доступен ({host})'
-            }
-        except socket.gaierror:
-            return {
-                'status': 'FAILED',
-                'host': host,
-                'message': f'❌ DNS недоступен (не могу разрешить {host})'
-            }
-        except socket.timeout:
-            return {
-                'status': 'FAILED',
-                'host': host,
-                'message': f'❌ Timeout при запросе к {host}'
+                'message': f'✅ DNS доступен ({host})'
             }
         except Exception as e:
             return {
@@ -227,9 +260,16 @@ class SystemAgent:
         if action not in valid_actions:
             return {'status': 'ERROR', 'message': f'Invalid action. Use: {", ".join(valid_actions)}'}
 
+        # Check if service exists first
+        if not SystemAgent.service_exists(service_name):
+            return {
+                'status': 'ERROR',
+                'message': f'Сервис {service_name} не установлен на сервере'
+            }
+
         try:
             result = subprocess.run(
-                ['systemctl', action, service_name],
+                ['/usr/bin/systemctl', action, service_name],
                 capture_output=True,
                 text=True,
                 timeout=10
@@ -238,28 +278,49 @@ class SystemAgent:
             if result.returncode == 0:
                 return {
                     'status': 'OK',
-                    'message': f'Сервис {service_name} успешно {action}ed'
+                    'message': f'✅ Сервис {service_name} успешно {action}ed'
                 }
             else:
+                error_msg = result.stderr.strip() if result.stderr else f'Failed to {action} {service_name}'
+                # Clean up error message
+                if 'not found' in error_msg.lower():
+                    error_msg = f'Сервис {service_name} не найден'
                 return {
                     'status': 'ERROR',
-                    'message': result.stderr.strip() if result.stderr else f'Failed to {action} {service_name}'
+                    'message': f'❌ {error_msg}'
                 }
         except subprocess.TimeoutExpired:
-            return {'status': 'ERROR', 'message': 'Command timeout'}
+            return {'status': 'ERROR', 'message': '❌ Command timeout'}
         except Exception as e:
-            return {'status': 'ERROR', 'message': str(e)}
+            return {'status': 'ERROR', 'message': f'❌ {str(e)}'}
 
     @staticmethod
     def get_ssh_connections():
         """Get active SSH connections."""
         try:
-            result = subprocess.run(
-                ['ss', '-tunap'],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
+            # Try ss first, then fall back to netstat
+            commands = [
+                ['/usr/bin/ss', '-tunap'],
+                ['/bin/netstat', '-tunap'],
+                ['/usr/bin/netstat', '-tunap'],
+            ]
+
+            result = None
+            for cmd in commands:
+                try:
+                    result = subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=5
+                    )
+                    if result.returncode == 0:
+                        break
+                except FileNotFoundError:
+                    continue
+
+            if not result or result.returncode != 0:
+                return ['Command not available (ss/netstat)']
 
             connections = []
             for line in result.stdout.split('\n'):
@@ -294,6 +355,9 @@ class SystemAgent:
             }
         except Exception as e:
             return {'error': str(e)}
+
+    @staticmethod
+    def get_wireguard_peers():
         """Get WireGuard peers with handshake info."""
         try:
             result = subprocess.run(

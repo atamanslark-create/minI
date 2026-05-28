@@ -6,9 +6,11 @@ from telegram.ext import Application, CommandHandler, MessageHandler, Conversati
 from config import CONFIG
 from agent import SystemAgent
 from alerts import AlertManager
+from alerts_extended import SmartAlertManager
 from metrics import MetricsCollector
 from report import ReportBot
 from utils import format_bytes, format_status_response
+from glados_client import GLaDosClient
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -19,28 +21,136 @@ logger = logging.getLogger(__name__)
 MAIN_MENU, SERVICES_MENU, MANAGE_MENU, WG_MENU = range(4)
 
 class VPSBot:
-    def __init__(self, token, admin_ids):
+    def __init__(self, token, admin_ids, glados_token=None, glados_owner_id=None):
         self.token = token
         self.admin_ids = admin_ids
-        self.services = ['ssh', 'nginx', 'mysql', 'postgresql', 'redis-server']
+        # Service name variations to try
+        self.service_aliases = {
+            'ssh': ['ssh', 'sshd', 'openssh-server'],
+            'nginx': ['nginx'],
+            'mysql': ['mysql', 'mysqld', 'mariadb'],
+            'postgresql': ['postgresql', 'postgres'],
+            'redis': ['redis-server', 'redis'],
+            'docker': ['docker', 'docker.service'],
+        }
+        self.services = self._get_available_services()
         self.app = None
         self.alert_task = None
+        self.glados_report_task = None
+
+        # GLaDoS integration
+        self.glados_client = None
+        if glados_token and glados_owner_id:
+            try:
+                self.glados_client = GLaDosClient(glados_token, glados_owner_id)
+                logger.info("GLaDoS client initialized")
+                self._register_glados_commands()
+            except Exception as e:
+                logger.warning(f"Failed to initialize GLaDoS client: {e}")
+
+    def _register_glados_commands(self):
+        """Register command handlers for GLaDoS."""
+        if not self.glados_client:
+            return
+
+        async def handle_status(args):
+            result = await self.glados_client.execute_command("status")
+            return result['message']
+
+        async def handle_restart(args):
+            result = await self.glados_client.execute_command("restart", args)
+            return result['message']
+
+        async def handle_cleanup(args):
+            result = await self.glados_client.execute_command("cleanup", args)
+            return result['message']
+
+        async def handle_processes(args):
+            result = await self.glados_client.execute_command("processes")
+            return result['message']
+
+        self.glados_client.register_command("status", handle_status)
+        self.glados_client.register_command("restart", handle_restart)
+        self.glados_client.register_command("cleanup", handle_cleanup)
+        self.glados_client.register_command("processes", handle_processes)
+
+    def _get_available_services(self):
+        """Get only services that exist on the system."""
+        available = []
+
+        # Try each service and its aliases (silently)
+        for service_name, aliases in self.service_aliases.items():
+            for alias in aliases:
+                try:
+                    if SystemAgent.service_exists(alias):
+                        available.append(alias)
+                        break
+                except:
+                    pass
+
+        logger.info(f"Detected services: {available if available else 'none'}")
+        return available
 
     def is_admin(self, user_id):
         return user_id in self.admin_ids
 
+    async def clear_history(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Clear chat history by deleting recent messages."""
+        try:
+            chat_id = update.effective_chat.id
+            message_id = update.message.message_id
+
+            # Delete current message first
+            try:
+                await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+            except:
+                pass
+
+            # Delete last 30 messages in chat
+            deleted_count = 0
+            for i in range(1, 31):
+                try:
+                    await context.bot.delete_message(chat_id=chat_id, message_id=message_id - i)
+                    deleted_count += 1
+                except:
+                    # Stop if we hit messages we can't delete
+                    if deleted_count > 5:
+                        break
+
+            # Send confirmation
+            await update.message.reply_text(f'🧹 История очищена ({deleted_count} сообщений удалено)')
+        except Exception as e:
+            logger.error(f"Clear history error: {e}")
+
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Start command - show main menu."""
+        """Start command - show main menu and clear chat history."""
         if not self.is_admin(update.effective_user.id):
             await update.message.reply_text('❌ Unauthorized')
             return ConversationHandler.END
 
+        # Clear chat history by deleting recent bot messages
+        try:
+            chat_id = update.effective_chat.id
+            message_id = update.message.message_id
+
+            # Delete last 20 messages in chat (clear history)
+            for i in range(1, 21):
+                try:
+                    await context.bot.delete_message(chat_id=chat_id, message_id=message_id - i)
+                except:
+                    # Ignore errors for messages that don't exist or can't be deleted
+                    pass
+        except Exception as e:
+            logger.warning(f"Could not clear history: {e}")
+
         reply_keyboard = [
             ['📊 Статус VPS', '💾 Диски'],
             ['🔥 Топ процессов', '🧩 Сервисы'],
-            ['📡 Пинг', '⚡ Спидтест'],
-            ['🔐 WireGuard', '📈 Статистика'],
-            ['ℹ️ Инфо', '👥 SSH', '⚙️ Управление'],
+            ['📡 Пинг', '🔌 Порты'],
+            ['⚡ Спидтест', '📈 Статистика'],
+            ['🔐 WireGuard', 'ℹ️ Инфо'],
+            ['👥 SSH', '⚙️ Управление'],
+            ['🧹 Очистить историю'],
         ]
         await update.message.reply_text(
             '🤖 *Меню мониторинга VPS*\n\nВыберите действие:',
@@ -113,11 +223,33 @@ class VPSBot:
     async def services_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show services menu."""
         try:
+            if not self.services:
+                await update.message.reply_text(
+                    '🧩 *Состояние сервисов*\n\n'
+                    '⚠️ Не удалось найти доступные сервисы для мониторинга.\n\n'
+                    'Возможно на сервере не установлены:\n'
+                    '• SSH / SSHD\n'
+                    '• Nginx\n'
+                    '• MySQL\n'
+                    '• PostgreSQL\n'
+                    '• Redis\n'
+                    '• Docker',
+                    parse_mode='Markdown'
+                )
+                return MAIN_MENU
+
             services_status = SystemAgent.get_services_status(self.services)
 
             response = "🧩 *Состояние сервисов*\n\n"
             for service, status in services_status.items():
-                emoji = '✅' if status == 'active' else '❌'
+                if status == 'active':
+                    emoji = '✅'
+                elif status == 'inactive':
+                    emoji = '⏹️'
+                elif status == 'not-found':
+                    emoji = '❌'
+                else:
+                    emoji = '⚠️'
                 response += f"{emoji} {service}: {status}\n"
 
             response += "\n💡 *Для управления* нажмите на сервис:\n"
@@ -291,12 +423,53 @@ class VPSBot:
         """Check internet connectivity."""
         try:
             await update.message.reply_text('📡 Проверка связи...')
-            ping_result = SystemAgent.ping_host()
 
-            if ping_result['status'] == 'OK':
-                response = f"✅ *Интернет доступен*\n\n{ping_result['message']}"
-            else:
-                response = f"❌ *Интернет недоступен*\n\n{ping_result['message']}"
+            # Use simple sync check
+            ping_result = SystemAgent.ping_host_sync()
+            response = ping_result['message']
+
+            await update.message.reply_text(response, parse_mode='Markdown')
+        except Exception as e:
+            await update.message.reply_text(f'❌ Error: {str(e)}')
+
+        return MAIN_MENU
+
+    async def check_ports_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Check common service ports."""
+        try:
+            await update.message.reply_text('🔌 Проверка портов (это может занять 15 сек)...')
+
+            # Common service ports
+            ports_to_check = {
+                22: 'SSH',
+                80: 'HTTP',
+                443: 'HTTPS',
+                3306: 'MySQL',
+                5432: 'PostgreSQL',
+                6379: 'Redis',
+            }
+
+            response = "🔌 *Состояние портов*\n\n"
+
+            # Check each port asynchronously in the background
+            try:
+                from network_checks import check_ports
+                results = await asyncio.wait_for(
+                    check_ports('localhost', list(ports_to_check.keys()), timeout=3.0),
+                    timeout=20.0
+                )
+
+                for result in results:
+                    if result.port in ports_to_check:
+                        service = ports_to_check[result.port]
+                        status = '✅ OPEN' if result.open else '❌ CLOSED'
+                        latency = f" ({result.latency_ms}ms)" if result.latency_ms else ""
+                        response += f"{status} - {result.port} ({service}){latency}\n"
+            except asyncio.TimeoutError:
+                response += "⏱️ Timeout при проверке портов"
+            except Exception as e:
+                # Fallback: use netstat
+                response += f"⚠️ Не удалось проверить порты: {str(e)}"
 
             await update.message.reply_text(response.strip(), parse_mode='Markdown')
         except Exception as e:
@@ -485,6 +658,8 @@ class VPSBot:
             return await self.services_menu(update, context)
         elif text == '📡 Пинг':
             return await self.ping_internet(update, context)
+        elif text == '🔌 Порты':
+            return await self.check_ports_cmd(update, context)
         elif text == '⚡ Спидтест':
             return await self.speedtest_menu(update, context)
         elif text == '🔐 WireGuard':
@@ -515,29 +690,31 @@ class VPSBot:
             return await self.confirm_uninstall(update, context)
         elif text == '❌ Отмена' or text == '❌ Отмена.':
             return await self.start(update, context)
+        elif text == '🧹 Очистить историю':
+            return await self.clear_history(update, context)
 
         return MAIN_MENU
 
     async def monitor_alerts(self):
-        """Background task to monitor system and send alerts."""
+        """Background task to monitor system and send alerts with smart filtering."""
         while True:
             try:
-                alerts = AlertManager.check_alerts()
+                # Use SmartAlertManager for intelligent filtering and GLaDoS integration
+                alerts = SmartAlertManager.check_alerts(glados_client=self.glados_client)
 
                 for alert in alerts:
-                    # Only send critical and warning alerts
-                    if alert['severity'] in ['critical', 'warning', 'info']:
-                        message = AlertManager.format_alert(alert)
+                    # Send all alerts (SmartAlertManager handles filtering)
+                    message = SmartAlertManager.format_alert(alert)
 
-                        for admin_id in self.admin_ids:
-                            try:
-                                await self.app.bot.send_message(
-                                    chat_id=admin_id,
-                                    text=message,
-                                    parse_mode='Markdown'
-                                )
-                            except Exception as e:
-                                logger.error(f"Failed to send alert to {admin_id}: {str(e)}")
+                    for admin_id in self.admin_ids:
+                        try:
+                            await self.app.bot.send_message(
+                                chat_id=admin_id,
+                                text=message,
+                                parse_mode='Markdown'
+                            )
+                        except Exception as e:
+                            logger.error(f"Failed to send alert to {admin_id}: {str(e)}")
 
                 # Check every 60 seconds
                 await asyncio.sleep(60)
@@ -546,11 +723,73 @@ class VPSBot:
                 logger.error(f"Alert monitor error: {str(e)}")
                 await asyncio.sleep(60)
 
+    async def send_hourly_report_to_glados(self):
+        """Send system status report to GLaDoS every 60 minutes."""
+        if not self.glados_client:
+            return
+
+        while True:
+            try:
+                await asyncio.sleep(3600)  # Wait 60 minutes
+
+                # Collect system metrics
+                cpu = SystemAgent.get_cpu_status()
+                memory = SystemAgent.get_memory_status()
+                uptime = SystemAgent.get_uptime()
+                disks = SystemAgent.get_disk_status()
+                system_info = SystemAgent.get_system_info()
+
+                # Build report content
+                content_lines = [
+                    f"📊 Статус системы",
+                    f"",
+                    f"<b>CPU:</b> {cpu['percent']}% ({cpu['count']} cores)",
+                    f"<b>RAM:</b> {memory['percent']}% ({format_bytes(memory['used'])} / {format_bytes(memory['total'])})",
+                    f"<b>Uptime:</b> {uptime}",
+                ]
+
+                # Add disk info
+                if disks:
+                    content_lines.append(f"")
+                    content_lines.append(f"<b>Диски:</b>")
+                    for disk in disks:
+                        content_lines.append(f"  {disk['device']}: {disk['percent']}%")
+
+                # Get service status
+                services_status = SystemAgent.get_services_status(self.services)
+                if services_status:
+                    content_lines.append(f"")
+                    content_lines.append(f"<b>Сервисы:</b>")
+                    for service, status in services_status.items():
+                        emoji = '✅' if status == 'active' else '❌'
+                        content_lines.append(f"  {emoji} {service}: {status}")
+
+                content = "\n".join(content_lines)
+                details = {
+                    "Hostname": system_info.get('hostname', 'Unknown'),
+                    "Kernel": system_info.get('kernel', 'Unknown'),
+                }
+
+                await self.glados_client.send_report(
+                    title="Hourly Status Report",
+                    content=content,
+                    details=details
+                )
+
+            except Exception as e:
+                logger.error(f"Failed to send hourly report to GLaDoS: {e}")
+                # Try again in 1 minute if error occurs
+                await asyncio.sleep(60)
+
     async def post_init(self, app):
         """Start background tasks after application initialization."""
         self.app = app
         self.alert_task = asyncio.create_task(self.monitor_alerts())
         logger.info('Alert monitor started')
+
+        if self.glados_client:
+            self.glados_report_task = asyncio.create_task(self.send_hourly_report_to_glados())
+            logger.info('GLaDoS hourly reporting started')
 
     async def pre_shutdown(self, app):
         """Cleanup before shutdown."""
@@ -560,6 +799,16 @@ class VPSBot:
                 await self.alert_task
             except asyncio.CancelledError:
                 pass
+
+        if self.glados_report_task:
+            self.glados_report_task.cancel()
+            try:
+                await self.glados_report_task
+            except asyncio.CancelledError:
+                pass
+
+        if self.glados_client:
+            await self.glados_client.close()
 
     def run(self):
         """Run the bot."""
@@ -597,5 +846,10 @@ class VPSBot:
         app.run_polling()
 
 if __name__ == '__main__':
-    bot = VPSBot(CONFIG['telegram_token'], CONFIG['admin_chat_ids'])
+    bot = VPSBot(
+        CONFIG['telegram_token'],
+        CONFIG['admin_chat_ids'],
+        glados_token=CONFIG.get('glados_token'),
+        glados_owner_id=CONFIG.get('glados_owner_id')
+    )
     bot.run()

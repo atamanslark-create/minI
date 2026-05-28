@@ -41,7 +41,7 @@ mkdir -p "$CONFIG_DIR"
 
 # Copy project files
 echo "📋 Copying project files..."
-cp bot.py agent.py config.py utils.py alerts.py metrics.py report.py requirements.txt "$INSTALL_DIR/"
+cp bot.py agent.py config.py utils.py alerts.py metrics.py report.py network_checks.py glados_client.py requirements.txt "$INSTALL_DIR/"
 
 # Create virtual environment
 echo "🐍 Creating Python virtual environment..."
