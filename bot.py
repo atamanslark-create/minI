@@ -1,9 +1,11 @@
 import logging
 import subprocess
+import asyncio
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import Application, CommandHandler, MessageHandler, ConversationHandler, filters, ContextTypes
 from config import CONFIG
 from agent import SystemAgent
+from alerts import AlertManager
 from utils import format_bytes, format_status_response
 
 logging.basicConfig(
@@ -19,6 +21,8 @@ class VPSBot:
         self.token = token
         self.admin_ids = admin_ids
         self.services = ['ssh', 'nginx', 'mysql', 'postgresql', 'redis-server']
+        self.app = None
+        self.alert_task = None
 
     def is_admin(self, user_id):
         return user_id in self.admin_ids
@@ -337,9 +341,56 @@ class VPSBot:
 
         return MAIN_MENU
 
+    async def monitor_alerts(self):
+        """Background task to monitor system and send alerts."""
+        while True:
+            try:
+                alerts = AlertManager.check_alerts()
+
+                for alert in alerts:
+                    # Only send critical and warning alerts
+                    if alert['severity'] in ['critical', 'warning', 'info']:
+                        message = AlertManager.format_alert(alert)
+
+                        for admin_id in self.admin_ids:
+                            try:
+                                await self.app.bot.send_message(
+                                    chat_id=admin_id,
+                                    text=message,
+                                    parse_mode='Markdown'
+                                )
+                            except Exception as e:
+                                logger.error(f"Failed to send alert to {admin_id}: {str(e)}")
+
+                # Check every 60 seconds
+                await asyncio.sleep(60)
+
+            except Exception as e:
+                logger.error(f"Alert monitor error: {str(e)}")
+                await asyncio.sleep(60)
+
+    async def post_init(self, app):
+        """Start background tasks after application initialization."""
+        self.app = app
+        self.alert_task = asyncio.create_task(self.monitor_alerts())
+        logger.info('Alert monitor started')
+
+    async def pre_shutdown(self, app):
+        """Cleanup before shutdown."""
+        if self.alert_task:
+            self.alert_task.cancel()
+            try:
+                await self.alert_task
+            except asyncio.CancelledError:
+                pass
+
     def run(self):
         """Run the bot."""
         app = Application.builder().token(self.token).build()
+
+        # Add callbacks for lifecycle events
+        app.post_init = self.post_init
+        app.pre_shutdown = self.pre_shutdown
 
         conv_handler = ConversationHandler(
             entry_points=[CommandHandler('start', self.start)],
