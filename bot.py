@@ -29,11 +29,54 @@ class VPSBot:
     def is_admin(self, user_id):
         return user_id in self.admin_ids
 
+    async def clear_history(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Clear chat history by deleting recent messages."""
+        try:
+            chat_id = update.effective_chat.id
+            message_id = update.message.message_id
+
+            # Delete current message first
+            try:
+                await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+            except:
+                pass
+
+            # Delete last 30 messages in chat
+            deleted_count = 0
+            for i in range(1, 31):
+                try:
+                    await context.bot.delete_message(chat_id=chat_id, message_id=message_id - i)
+                    deleted_count += 1
+                except:
+                    # Stop if we hit messages we can't delete
+                    if deleted_count > 5:
+                        break
+
+            # Send confirmation
+            await update.message.reply_text(f'🧹 История очищена ({deleted_count} сообщений удалено)')
+        except Exception as e:
+            logger.error(f"Clear history error: {e}")
+
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Start command - show main menu."""
+        """Start command - show main menu and clear chat history."""
         if not self.is_admin(update.effective_user.id):
             await update.message.reply_text('❌ Unauthorized')
             return ConversationHandler.END
+
+        # Clear chat history by deleting recent bot messages
+        try:
+            chat_id = update.effective_chat.id
+            message_id = update.message.message_id
+
+            # Delete last 20 messages in chat (clear history)
+            for i in range(1, 21):
+                try:
+                    await context.bot.delete_message(chat_id=chat_id, message_id=message_id - i)
+                except:
+                    # Ignore errors for messages that don't exist or can't be deleted
+                    pass
+        except Exception as e:
+            logger.warning(f"Could not clear history: {e}")
 
         reply_keyboard = [
             ['📊 Статус VPS', '💾 Диски'],
@@ -42,6 +85,7 @@ class VPSBot:
             ['⚡ Спидтест', '📈 Статистика'],
             ['🔐 WireGuard', 'ℹ️ Инфо'],
             ['👥 SSH', '⚙️ Управление'],
+            ['🧹 Очистить историю'],
         ]
         await update.message.reply_text(
             '🤖 *Меню мониторинга VPS*\n\nВыберите действие:',
@@ -559,6 +603,8 @@ class VPSBot:
             return await self.confirm_uninstall(update, context)
         elif text == '❌ Отмена' or text == '❌ Отмена.':
             return await self.start(update, context)
+        elif text == '🧹 Очистить историю':
+            return await self.clear_history(update, context)
 
         return MAIN_MENU
 
