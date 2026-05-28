@@ -14,23 +14,24 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
-# Check and install system dependencies
-echo "📦 Checking system dependencies..."
-PYTHON_VERSION=$(python3 --version 2>&1 | grep -oP '\d+\.\d+')
-VENV_PACKAGE="python${PYTHON_VERSION}-venv"
+# Install system dependencies
+echo "📦 Installing system dependencies..."
+if command -v apt-get &> /dev/null; then
+    echo "   Using apt-get..."
+    apt-get update -qq
+    apt-get install -y python3-venv python3-dev python3-pip git
+elif command -v yum &> /dev/null; then
+    echo "   Using yum..."
+    yum install -y python3-devel python3-pip git
+else
+    echo "❌ Cannot detect package manager (apt-get or yum)"
+    exit 1
+fi
 
-# Try to check if venv module is available
-if ! python3 -c "import venv" 2>/dev/null; then
-    echo "⚠️  Installing python${PYTHON_VERSION}-venv..."
-    if command -v apt-get &> /dev/null; then
-        apt-get update -qq
-        apt-get install -y "$VENV_PACKAGE" python3-dev
-    elif command -v yum &> /dev/null; then
-        yum install -y python3-devel
-    else
-        echo "❌ Cannot detect package manager. Please install python${PYTHON_VERSION}-venv manually."
-        exit 1
-    fi
+# Clean up old installation if it exists
+if [ -d "$INSTALL_DIR" ]; then
+    echo "🧹 Cleaning up old installation..."
+    rm -rf "$INSTALL_DIR"
 fi
 
 # Create installation directory
@@ -44,7 +45,14 @@ cp bot.py agent.py config.py utils.py requirements.txt "$INSTALL_DIR/"
 
 # Create virtual environment
 echo "🐍 Creating Python virtual environment..."
-python3 -m venv "$VENV_DIR"
+python3 -m venv "$VENV_DIR" || {
+    echo "❌ Failed to create virtual environment"
+    echo "   Trying alternative method..."
+    python3 -m pip install --upgrade pip
+    python3 -m venv "$VENV_DIR"
+}
+
+# Source virtual environment
 source "$VENV_DIR/bin/activate"
 
 # Install dependencies
