@@ -298,12 +298,29 @@ class SystemAgent:
     def get_ssh_connections():
         """Get active SSH connections."""
         try:
-            result = subprocess.run(
-                ['ss', '-tunap'],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
+            # Try ss first, then fall back to netstat
+            commands = [
+                ['/usr/bin/ss', '-tunap'],
+                ['/bin/netstat', '-tunap'],
+                ['/usr/bin/netstat', '-tunap'],
+            ]
+
+            result = None
+            for cmd in commands:
+                try:
+                    result = subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=5
+                    )
+                    if result.returncode == 0:
+                        break
+                except FileNotFoundError:
+                    continue
+
+            if not result or result.returncode != 0:
+                return ['Command not available (ss/netstat)']
 
             connections = []
             for line in result.stdout.split('\n'):
@@ -338,6 +355,9 @@ class SystemAgent:
             }
         except Exception as e:
             return {'error': str(e)}
+
+    @staticmethod
+    def get_wireguard_peers():
         """Get WireGuard peers with handshake info."""
         try:
             result = subprocess.run(
