@@ -1,0 +1,11 @@
+# mini-bot configuration example
+
+# Telegram bot token (get from @BotFather)
+telegram_token: 123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11
+
+# Admin chat IDs (comma-separated, get from @userinfobot)
+admin_chat_ids: 12345678,87654321
+
+# You can also use environment variables:
+# TELEGRAM_BOT_TOKEN - for telegram_token
+# ADMIN_CHAT_IDS - for admin_chat_ids
