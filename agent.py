@@ -80,7 +80,7 @@ class SystemAgent:
         """Get status of a systemd service."""
         try:
             result = subprocess.run(
-                ['systemctl', 'is-active', service_name],
+                ['/usr/bin/systemctl', 'is-active', service_name],
                 capture_output=True,
                 text=True,
                 timeout=5
@@ -104,7 +104,7 @@ class SystemAgent:
         """Get failed systemd units."""
         try:
             result = subprocess.run(
-                ['systemctl', 'list-units', '--failed', '--no-pager'],
+                ['/usr/bin/systemctl', 'list-units', '--failed', '--no-pager'],
                 capture_output=True,
                 text=True,
                 timeout=10
@@ -241,7 +241,7 @@ class SystemAgent:
 
         try:
             result = subprocess.run(
-                ['systemctl', action, service_name],
+                ['/usr/bin/systemctl', action, service_name],
                 capture_output=True,
                 text=True,
                 timeout=10
