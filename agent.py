@@ -160,33 +160,20 @@ class SystemAgent:
 
     @staticmethod
     def ping_host(host='8.8.8.8', count=3, timeout=4):
-        """Ping a host to check internet connectivity."""
+        """Ping a host to check internet connectivity using socket."""
+        import socket
         try:
-            result = subprocess.run(
-                ['ping', '-c', str(count), '-W', str(timeout), host],
-                capture_output=True,
-                text=True,
-                timeout=timeout + 2
-            )
-            if result.returncode == 0:
-                lines = result.stdout.strip().split('\n')
-                stats_line = lines[-1] if lines else ''
-                return {
-                    'status': 'OK',
-                    'host': host,
-                    'stats': stats_line
-                }
-            else:
-                return {
-                    'status': 'FAILED',
-                    'host': host,
-                    'error': 'No response'
-                }
-        except Exception as e:
+            socket.create_connection((host, 80), timeout=timeout)
             return {
-                'status': 'ERROR',
+                'status': 'OK',
                 'host': host,
-                'error': str(e)
+                'message': f'{host} is reachable'
+            }
+        except (socket.timeout, socket.error):
+            return {
+                'status': 'FAILED',
+                'host': host,
+                'message': f'Cannot reach {host}'
             }
 
     @staticmethod

@@ -151,9 +151,9 @@ class VPSBot:
             ping_result = SystemAgent.ping_host()
 
             if ping_result['status'] == 'OK':
-                response = f"✅ *Интернет доступен*\n\n{ping_result['stats']}"
+                response = f"✅ *Интернет доступен*\n\n{ping_result['message']}"
             else:
-                response = f"❌ *Интернет недоступен*\n\n{ping_result.get('error', 'Unknown error')}"
+                response = f"❌ *Интернет недоступен*\n\n{ping_result['message']}"
 
             await update.message.reply_text(response.strip(), parse_mode='Markdown')
         except Exception as e:
@@ -167,7 +167,7 @@ class VPSBot:
             await update.message.reply_text('⚡ *Спидтест может занять 30-60 секунд...*\n\n⏳ Пожалуйста, ждите...', parse_mode='Markdown')
 
             result = subprocess.run(
-                ['bash', '-c', 'speedtest-cli --simple 2>/dev/null || echo "Speedtest not installed"'],
+                ['/bin/sh', '-c', 'speedtest-cli --simple 2>/dev/null || echo "Speedtest not installed"'],
                 capture_output=True,
                 text=True,
                 timeout=120
