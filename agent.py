@@ -157,3 +157,115 @@ class SystemAgent:
                     'address': addr.address,
                 })
         return interfaces
+
+    @staticmethod
+    def ping_host(host='8.8.8.8', count=3, timeout=4):
+        """Ping a host to check internet connectivity."""
+        try:
+            result = subprocess.run(
+                ['ping', '-c', str(count), '-W', str(timeout), host],
+                capture_output=True,
+                text=True,
+                timeout=timeout + 2
+            )
+            if result.returncode == 0:
+                lines = result.stdout.strip().split('\n')
+                stats_line = lines[-1] if lines else ''
+                return {
+                    'status': 'OK',
+                    'host': host,
+                    'stats': stats_line
+                }
+            else:
+                return {
+                    'status': 'FAILED',
+                    'host': host,
+                    'error': 'No response'
+                }
+        except Exception as e:
+            return {
+                'status': 'ERROR',
+                'host': host,
+                'error': str(e)
+            }
+
+    @staticmethod
+    def get_wireguard_status():
+        """Get WireGuard tunnel status."""
+        try:
+            result = subprocess.run(
+                ['wg', 'show', 'wg0'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode == 0:
+                return {
+                    'active': True,
+                    'output': result.stdout.strip()
+                }
+            else:
+                return {
+                    'active': False,
+                    'output': 'WireGuard interface not found'
+                }
+        except FileNotFoundError:
+            return {
+                'active': False,
+                'output': 'WireGuard not installed'
+            }
+        except Exception as e:
+            return {
+                'active': False,
+                'output': f'Error: {str(e)}'
+            }
+
+    @staticmethod
+    def get_wireguard_peers():
+        """Get WireGuard peers with handshake info."""
+        try:
+            result = subprocess.run(
+                ['wg', 'show', 'wg0', 'peers'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            peers = []
+            if result.returncode == 0 and result.stdout.strip():
+                for peer in result.stdout.strip().split('\n'):
+                    if peer:
+                        peers.append(peer)
+
+                handshake_result = subprocess.run(
+                    ['wg', 'show', 'wg0', 'latest-handshakes'],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                if handshake_result.returncode == 0:
+                    handshakes = {}
+                    for line in handshake_result.stdout.strip().split('\n'):
+                        if line:
+                            parts = line.split('\t')
+                            if len(parts) == 2:
+                                peer_key = parts[0]
+                                timestamp = int(parts[1])
+                                time_ago = int(datetime.now().timestamp()) - timestamp
+                                handshakes[peer_key] = time_ago
+
+                    return {
+                        'status': 'OK',
+                        'peers': peers,
+                        'handshakes': handshakes
+                    }
+
+            return {
+                'status': 'OK',
+                'peers': peers if peers else [],
+                'handshakes': {}
+            }
+        except Exception as e:
+            return {
+                'status': 'ERROR',
+                'error': str(e)
+            }

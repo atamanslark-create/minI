@@ -1,4 +1,5 @@
 import logging
+import subprocess
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import Application, CommandHandler, MessageHandler, ConversationHandler, filters, ContextTypes
 from config import CONFIG
@@ -11,7 +12,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-MAIN_MENU, SERVICES_MENU, MANAGE_MENU = range(3)
+MAIN_MENU, SERVICES_MENU, MANAGE_MENU, WG_MENU = range(4)
 
 class VPSBot:
     def __init__(self, token, admin_ids):
@@ -31,7 +32,9 @@ class VPSBot:
         reply_keyboard = [
             ['📊 Статус VPS', '💾 Диски'],
             ['🔥 Топ процессов', '🧩 Сервисы'],
-            ['🩺 Диагностика', '⚙️ Управление'],
+            ['📡 Пинг', '⚡ Спидтест'],
+            ['🔐 WireGuard', '🩺 Диагностика'],
+            ['⚙️ Управление'],
         ]
         await update.message.reply_text(
             '🤖 *Меню мониторинга VPS*\n\nВыберите действие:',
@@ -141,6 +144,117 @@ class VPSBot:
 
         return MAIN_MENU
 
+    async def ping_internet(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Check internet connectivity."""
+        try:
+            await update.message.reply_text('📡 Проверка связи...')
+            ping_result = SystemAgent.ping_host()
+
+            if ping_result['status'] == 'OK':
+                response = f"✅ *Интернет доступен*\n\n{ping_result['stats']}"
+            else:
+                response = f"❌ *Интернет недоступен*\n\n{ping_result.get('error', 'Unknown error')}"
+
+            await update.message.reply_text(response.strip(), parse_mode='Markdown')
+        except Exception as e:
+            await update.message.reply_text(f'❌ Error: {str(e)}')
+
+        return MAIN_MENU
+
+    async def speedtest_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Run speedtest."""
+        try:
+            await update.message.reply_text('⚡ *Спидтест может занять 30-60 секунд...*\n\n⏳ Пожалуйста, ждите...', parse_mode='Markdown')
+
+            result = subprocess.run(
+                ['bash', '-c', 'speedtest-cli --simple 2>/dev/null || echo "Speedtest not installed"'],
+                capture_output=True,
+                text=True,
+                timeout=120
+            )
+
+            if 'not installed' in result.stdout:
+                response = "⚠️ *speedtest-cli не установлен*\n\nУстановите: `pip install speedtest-cli`"
+                await update.message.reply_text(response, parse_mode='Markdown')
+            else:
+                lines = result.stdout.strip().split('\n')
+                if len(lines) >= 3:
+                    download, upload, ping = lines[0], lines[1], lines[2]
+                    response = f"""⚡ *Результаты спидтеста*
+
+📥 Download: {download} Mbps
+📤 Upload: {upload} Mbps
+📡 Ping: {ping} ms
+"""
+                    await update.message.reply_text(response.strip(), parse_mode='Markdown')
+                else:
+                    await update.message.reply_text('❌ Ошибка при выполнении спидтеста')
+
+        except subprocess.TimeoutExpired:
+            await update.message.reply_text('⏱️ Спидтест истёк по времени (> 120 сек)')
+        except Exception as e:
+            await update.message.reply_text(f'❌ Error: {str(e)}')
+
+        return MAIN_MENU
+
+    async def wireguard_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show WireGuard menu."""
+        reply_keyboard = [
+            ['🔐 WG статус', '👥 Peers'],
+            ['🩺 WG диагностика', '🔁 Рестарт WG'],
+            ['◀️ Назад'],
+        ]
+        await update.message.reply_text(
+            '🔐 *WireGuard*\n\nВыберите действие:',
+            reply_markup=ReplyKeyboardMarkup(reply_keyboard, resize_keyboard=True),
+            parse_mode='Markdown'
+        )
+        return WG_MENU
+
+    async def wireguard_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show WireGuard status."""
+        try:
+            wg_status = SystemAgent.get_wireguard_status()
+
+            if wg_status['active']:
+                response = f"🔐 *WireGuard статус: АКТИВЕН*\n\n```\n{wg_status['output']}\n```"
+            else:
+                response = f"🔐 *WireGuard статус: НЕАКТИВЕН*\n\n{wg_status['output']}"
+
+            await update.message.reply_text(response, parse_mode='Markdown')
+        except Exception as e:
+            await update.message.reply_text(f'❌ Error: {str(e)}')
+
+        return WG_MENU
+
+    async def wireguard_peers(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show WireGuard peers."""
+        try:
+            peers_data = SystemAgent.get_wireguard_peers()
+
+            if peers_data['status'] == 'OK':
+                if peers_data['peers']:
+                    response = "👥 *WireGuard Peers*\n\n"
+                    for peer in peers_data['peers']:
+                        response += f"`{peer[:20]}...`\n"
+
+                    if peers_data.get('handshakes'):
+                        response += "\n*Последний handshake:*\n"
+                        for peer_key, time_ago in list(peers_data['handshakes'].items())[:5]:
+                            minutes_ago = time_ago // 60
+                            response += f"{peer_key[:15]}...: {minutes_ago} мин назад\n"
+                else:
+                    response = "👥 *WireGuard Peers*\n\nNет активных peers"
+
+                await update.message.reply_text(response, parse_mode='Markdown')
+            else:
+                await update.message.reply_text(f"❌ {peers_data.get('error', 'Unknown error')}")
+
+        except Exception as e:
+            await update.message.reply_text(f'❌ Error: {str(e)}')
+
+        return WG_MENU
+
     async def manage_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show management menu."""
         reply_keyboard = [
@@ -198,6 +312,16 @@ class VPSBot:
             return await self.top_processes(update, context)
         elif text == '🧩 Сервисы':
             return await self.services_menu(update, context)
+        elif text == '📡 Пинг':
+            return await self.ping_internet(update, context)
+        elif text == '⚡ Спидтест':
+            return await self.speedtest_menu(update, context)
+        elif text == '🔐 WireGuard':
+            return await self.wireguard_menu(update, context)
+        elif text == '🔐 WG статус':
+            return await self.wireguard_status(update, context)
+        elif text == '👥 Peers':
+            return await self.wireguard_peers(update, context)
         elif text == '🩺 Диагностика':
             return await self.diagnostics(update, context)
         elif text == '⚙️ Управление':
@@ -222,6 +346,7 @@ class VPSBot:
             states={
                 MAIN_MENU: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message)],
                 MANAGE_MENU: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message)],
+                WG_MENU: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message)],
             },
             fallbacks=[CommandHandler('start', self.start)],
         )
