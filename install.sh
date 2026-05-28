@@ -14,6 +14,21 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
+# Check and install system dependencies
+echo "📦 Checking system dependencies..."
+if ! python3 -m venv --help >/dev/null 2>&1; then
+    echo "⚠️  Installing python3-venv..."
+    if command -v apt-get &> /dev/null; then
+        apt-get update -qq
+        apt-get install -y python3-venv python3-dev
+    elif command -v yum &> /dev/null; then
+        yum install -y python3-devel
+    else
+        echo "❌ Cannot detect package manager. Please install python3-venv manually."
+        exit 1
+    fi
+fi
+
 # Create installation directory
 echo "📁 Creating directories..."
 mkdir -p "$INSTALL_DIR"
