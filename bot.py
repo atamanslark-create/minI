@@ -22,9 +22,22 @@ class VPSBot:
     def __init__(self, token, admin_ids):
         self.token = token
         self.admin_ids = admin_ids
-        self.services = ['ssh', 'nginx', 'mysql', 'postgresql', 'redis-server']
+        # List of common services to check, but only use those that exist
+        self.available_services = ['ssh', 'nginx', 'mysql', 'postgresql', 'redis-server', 'docker']
+        self.services = self._get_available_services()
         self.app = None
         self.alert_task = None
+
+    def _get_available_services(self):
+        """Get only services that exist on the system."""
+        available = []
+        for service in self.available_services:
+            if SystemAgent.service_exists(service):
+                available.append(service)
+        # At minimum, SSH should always exist
+        if 'ssh' not in available:
+            available.append('ssh')
+        return available if available else ['ssh']
 
     def is_admin(self, user_id):
         return user_id in self.admin_ids
@@ -162,7 +175,14 @@ class VPSBot:
 
             response = "🧩 *Состояние сервисов*\n\n"
             for service, status in services_status.items():
-                emoji = '✅' if status == 'active' else '❌'
+                if status == 'active':
+                    emoji = '✅'
+                elif status == 'inactive':
+                    emoji = '⏹️'
+                elif status == 'not-found':
+                    emoji = '❌'
+                else:
+                    emoji = '⚠️'
                 response += f"{emoji} {service}: {status}\n"
 
             response += "\n💡 *Для управления* нажмите на сервис:\n"

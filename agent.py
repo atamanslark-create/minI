@@ -76,6 +76,20 @@ class SystemAgent:
         return processes[:limit]
 
     @staticmethod
+    def service_exists(service_name):
+        """Check if systemd service exists."""
+        try:
+            result = subprocess.run(
+                ['/usr/bin/systemctl', 'list-unit-files', service_name],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            return result.returncode == 0 and service_name in result.stdout
+        except:
+            return False
+
+    @staticmethod
     def get_service_status(service_name):
         """Get status of a systemd service."""
         try:
@@ -85,11 +99,14 @@ class SystemAgent:
                 text=True,
                 timeout=5
             )
-            return result.stdout.strip()
+            status = result.stdout.strip()
+            if status == 'unknown':
+                return 'not-found'
+            return status
         except subprocess.TimeoutExpired:
             return 'timeout'
         except Exception as e:
-            return f'error: {str(e)}'
+            return 'error'
 
     @staticmethod
     def get_services_status(services):
@@ -239,6 +256,13 @@ class SystemAgent:
         if action not in valid_actions:
             return {'status': 'ERROR', 'message': f'Invalid action. Use: {", ".join(valid_actions)}'}
 
+        # Check if service exists first
+        if not SystemAgent.service_exists(service_name):
+            return {
+                'status': 'ERROR',
+                'message': f'Сервис {service_name} не установлен на сервере'
+            }
+
         try:
             result = subprocess.run(
                 ['/usr/bin/systemctl', action, service_name],
@@ -250,17 +274,21 @@ class SystemAgent:
             if result.returncode == 0:
                 return {
                     'status': 'OK',
-                    'message': f'Сервис {service_name} успешно {action}ed'
+                    'message': f'✅ Сервис {service_name} успешно {action}ed'
                 }
             else:
+                error_msg = result.stderr.strip() if result.stderr else f'Failed to {action} {service_name}'
+                # Clean up error message
+                if 'not found' in error_msg.lower():
+                    error_msg = f'Сервис {service_name} не найден'
                 return {
                     'status': 'ERROR',
-                    'message': result.stderr.strip() if result.stderr else f'Failed to {action} {service_name}'
+                    'message': f'❌ {error_msg}'
                 }
         except subprocess.TimeoutExpired:
-            return {'status': 'ERROR', 'message': 'Command timeout'}
+            return {'status': 'ERROR', 'message': '❌ Command timeout'}
         except Exception as e:
-            return {'status': 'ERROR', 'message': str(e)}
+            return {'status': 'ERROR', 'message': f'❌ {str(e)}'}
 
     @staticmethod
     def get_ssh_connections():
