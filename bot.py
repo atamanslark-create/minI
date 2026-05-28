@@ -316,21 +316,27 @@ class VPSBot:
             )
 
             if 'not installed' in result.stdout:
-                response = "⚠️ *speedtest-cli не установлен*\n\nУстановите: `pip install speedtest-cli`"
+                response = "⚠️ *speedtest-cli не установлен*\n\nУстановите в venv:\n`sudo /opt/mini-bot/venv/bin/pip install speedtest-cli`"
                 await update.message.reply_text(response, parse_mode='Markdown')
             else:
-                lines = result.stdout.strip().split('\n')
+                lines = [line.strip() for line in result.stdout.strip().split('\n') if line.strip()]
                 if len(lines) >= 3:
-                    download, upload, ping = lines[0], lines[1], lines[2]
-                    response = f"""⚡ *Результаты спидтеста*
+                    try:
+                        download = float(lines[0])
+                        upload = float(lines[1])
+                        ping = float(lines[2])
 
-📥 Download: {download} Mbps
-📤 Upload: {upload} Mbps
-📡 Ping: {ping} ms
+                        response = f"""⚡ *Результаты спидтеста*
+
+📥 Download: {download:.2f} Mbps
+📤 Upload: {upload:.2f} Mbps
+📡 Ping: {ping:.2f} ms
 """
-                    await update.message.reply_text(response.strip(), parse_mode='Markdown')
+                        await update.message.reply_text(response.strip(), parse_mode='Markdown')
+                    except ValueError:
+                        await update.message.reply_text(f'❌ Ошибка парсинга результатов:\n`{result.stdout}`', parse_mode='Markdown')
                 else:
-                    await update.message.reply_text('❌ Ошибка при выполнении спидтеста')
+                    await update.message.reply_text(f'❌ Неожиданный формат результатов:\n`{result.stdout}`', parse_mode='Markdown')
 
         except subprocess.TimeoutExpired:
             await update.message.reply_text('⏱️ Спидтест истёк по времени (> 120 сек)')
