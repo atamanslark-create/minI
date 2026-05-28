@@ -79,13 +79,15 @@ class SystemAgent:
     def service_exists(service_name):
         """Check if systemd service exists."""
         try:
+            # Try to get service status - if it works, service exists
             result = subprocess.run(
-                ['/usr/bin/systemctl', 'list-unit-files', service_name],
+                ['/usr/bin/systemctl', 'show', '-p', 'Type', service_name],
                 capture_output=True,
                 text=True,
                 timeout=5
             )
-            return result.returncode == 0 and service_name in result.stdout
+            # If return code is 0 or output contains Type=, service exists
+            return result.returncode == 0 or 'Type=' in result.stdout
         except:
             return False
 

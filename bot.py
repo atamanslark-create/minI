@@ -22,8 +22,15 @@ class VPSBot:
     def __init__(self, token, admin_ids):
         self.token = token
         self.admin_ids = admin_ids
-        # List of common services to check, but only use those that exist
-        self.available_services = ['ssh', 'nginx', 'mysql', 'postgresql', 'redis-server', 'docker']
+        # Service name variations to try
+        self.service_aliases = {
+            'ssh': ['ssh', 'sshd', 'openssh-server'],
+            'nginx': ['nginx'],
+            'mysql': ['mysql', 'mysqld', 'mariadb'],
+            'postgresql': ['postgresql', 'postgres'],
+            'redis': ['redis-server', 'redis'],
+            'docker': ['docker', 'docker.service'],
+        }
         self.services = self._get_available_services()
         self.app = None
         self.alert_task = None
@@ -31,13 +38,26 @@ class VPSBot:
     def _get_available_services(self):
         """Get only services that exist on the system."""
         available = []
-        for service in self.available_services:
-            if SystemAgent.service_exists(service):
-                available.append(service)
-        # At minimum, SSH should always exist
-        if 'ssh' not in available:
-            available.append('ssh')
-        return available if available else ['ssh']
+        found_services = {}
+
+        # Try each service and its aliases
+        for service_name, aliases in self.service_aliases.items():
+            for alias in aliases:
+                if SystemAgent.service_exists(alias):
+                    found_services[service_name] = alias
+                    available.append(alias)
+                    break
+
+        # At minimum, try to find SSH
+        if not any(s in available for s in ['ssh', 'sshd', 'openssh-server']):
+            # Try common SSH names if not found
+            for ssh_name in ['ssh', 'sshd', 'openssh-server']:
+                if SystemAgent.service_exists(ssh_name):
+                    available.append(ssh_name)
+                    break
+
+        logger.info(f"Available services: {available}")
+        return available if available else []
 
     def is_admin(self, user_id):
         return user_id in self.admin_ids
@@ -171,6 +191,21 @@ class VPSBot:
     async def services_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show services menu."""
         try:
+            if not self.services:
+                await update.message.reply_text(
+                    '🧩 *Состояние сервисов*\n\n'
+                    '⚠️ Не удалось найти доступные сервисы для мониторинга.\n\n'
+                    'Возможно на сервере не установлены:\n'
+                    '• SSH / SSHD\n'
+                    '• Nginx\n'
+                    '• MySQL\n'
+                    '• PostgreSQL\n'
+                    '• Redis\n'
+                    '• Docker',
+                    parse_mode='Markdown'
+                )
+                return MAIN_MENU
+
             services_status = SystemAgent.get_services_status(self.services)
 
             response = "🧩 *Состояние сервисов*\n\n"
