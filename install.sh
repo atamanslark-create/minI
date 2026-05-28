@@ -16,15 +16,19 @@ fi
 
 # Check and install system dependencies
 echo "📦 Checking system dependencies..."
-if ! python3 -m venv --help >/dev/null 2>&1; then
-    echo "⚠️  Installing python3-venv..."
+PYTHON_VERSION=$(python3 --version 2>&1 | grep -oP '\d+\.\d+')
+VENV_PACKAGE="python${PYTHON_VERSION}-venv"
+
+# Try to check if venv module is available
+if ! python3 -c "import venv" 2>/dev/null; then
+    echo "⚠️  Installing python${PYTHON_VERSION}-venv..."
     if command -v apt-get &> /dev/null; then
         apt-get update -qq
-        apt-get install -y python3-venv python3-dev
+        apt-get install -y "$VENV_PACKAGE" python3-dev
     elif command -v yum &> /dev/null; then
         yum install -y python3-devel
     else
-        echo "❌ Cannot detect package manager. Please install python3-venv manually."
+        echo "❌ Cannot detect package manager. Please install python${PYTHON_VERSION}-venv manually."
         exit 1
     fi
 fi
