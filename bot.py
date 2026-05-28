@@ -289,18 +289,13 @@ class VPSBot:
         return MAIN_MENU
 
     async def ping_internet(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Check internet connectivity with packet loss."""
+        """Check internet connectivity."""
         try:
-            await update.message.reply_text('📡 Проверка связи... (это может занять 20 сек)')
+            await update.message.reply_text('📡 Проверка связи...')
 
-            # Try async ping first
-            try:
-                ping_result = await SystemAgent.ping_host_async()
-                response = f"{'✅' if ping_result['reachable'] else '❌'} *Интернет*\n\n{ping_result['message']}"
-            except:
-                # Fallback to sync DNS check
-                ping_result = SystemAgent.ping_host_sync()
-                response = f"{ping_result['message']}"
+            # Use simple sync check
+            ping_result = SystemAgent.ping_host_sync()
+            response = ping_result['message']
 
             await update.message.reply_text(response, parse_mode='Markdown')
         except Exception as e:
@@ -311,9 +306,7 @@ class VPSBot:
     async def check_ports_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Check common service ports."""
         try:
-            await update.message.reply_text('🔌 Проверка портов...')
-
-            from network_checks import check_ports
+            await update.message.reply_text('🔌 Проверка портов (это может занять 15 сек)...')
 
             # Common service ports
             ports_to_check = {
@@ -325,15 +318,27 @@ class VPSBot:
                 6379: 'Redis',
             }
 
-            results = await check_ports('localhost', list(ports_to_check.keys()), timeout=3.0)
-
             response = "🔌 *Состояние портов*\n\n"
-            for result in results:
-                if result.port in ports_to_check:
-                    service = ports_to_check[result.port]
-                    status = '✅ OPEN' if result.open else '❌ CLOSED'
-                    latency = f" ({result.latency_ms}ms)" if result.latency_ms else ""
-                    response += f"{status} - {result.port}/TCP ({service}){latency}\n"
+
+            # Check each port asynchronously in the background
+            try:
+                from network_checks import check_ports
+                results = await asyncio.wait_for(
+                    check_ports('localhost', list(ports_to_check.keys()), timeout=3.0),
+                    timeout=20.0
+                )
+
+                for result in results:
+                    if result.port in ports_to_check:
+                        service = ports_to_check[result.port]
+                        status = '✅ OPEN' if result.open else '❌ CLOSED'
+                        latency = f" ({result.latency_ms}ms)" if result.latency_ms else ""
+                        response += f"{status} - {result.port} ({service}){latency}\n"
+            except asyncio.TimeoutError:
+                response += "⏱️ Timeout при проверке портов"
+            except Exception as e:
+                # Fallback: use netstat
+                response += f"⚠️ Не удалось проверить порты: {str(e)}"
 
             await update.message.reply_text(response.strip(), parse_mode='Markdown')
         except Exception as e:
