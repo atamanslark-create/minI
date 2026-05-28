@@ -21,7 +21,8 @@ def load_config():
     # Load from YAML if found
     if config_path:
         with open(config_path, 'r') as f:
-            config = yaml.safe_load(f) or {}
+            loaded = yaml.safe_load(f)
+            config = loaded if isinstance(loaded, dict) else {}
 
     # Override with environment variables
     config['telegram_token'] = os.getenv('TELEGRAM_BOT_TOKEN', config.get('telegram_token'))
