@@ -157,3 +157,187 @@ class SystemAgent:
                     'address': addr.address,
                 })
         return interfaces
+
+    @staticmethod
+    def ping_host(host='8.8.8.8', count=3, timeout=4):
+        """Check internet connectivity using DNS lookup."""
+        import socket
+        try:
+            socket.setdefaulttimeout(timeout)
+            socket.gethostbyname(host)
+            return {
+                'status': 'OK',
+                'host': host,
+                'message': f'✅ Интернет доступен ({host})'
+            }
+        except socket.gaierror:
+            return {
+                'status': 'FAILED',
+                'host': host,
+                'message': f'❌ DNS недоступен (не могу разрешить {host})'
+            }
+        except socket.timeout:
+            return {
+                'status': 'FAILED',
+                'host': host,
+                'message': f'❌ Timeout при запросе к {host}'
+            }
+        except Exception as e:
+            return {
+                'status': 'FAILED',
+                'host': host,
+                'message': f'❌ Ошибка: {str(e)}'
+            }
+
+    @staticmethod
+    def get_wireguard_status():
+        """Get WireGuard tunnel status."""
+        try:
+            result = subprocess.run(
+                ['wg', 'show', 'wg0'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode == 0:
+                return {
+                    'active': True,
+                    'output': result.stdout.strip()
+                }
+            else:
+                return {
+                    'active': False,
+                    'output': 'WireGuard interface not found'
+                }
+        except FileNotFoundError:
+            return {
+                'active': False,
+                'output': 'WireGuard not installed'
+            }
+        except Exception as e:
+            return {
+                'active': False,
+                'output': f'Error: {str(e)}'
+            }
+
+    @staticmethod
+    def manage_service(service_name, action):
+        """Manage systemd service (start, stop, restart)."""
+        valid_actions = ['start', 'stop', 'restart']
+        if action not in valid_actions:
+            return {'status': 'ERROR', 'message': f'Invalid action. Use: {", ".join(valid_actions)}'}
+
+        try:
+            result = subprocess.run(
+                ['systemctl', action, service_name],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+
+            if result.returncode == 0:
+                return {
+                    'status': 'OK',
+                    'message': f'Сервис {service_name} успешно {action}ed'
+                }
+            else:
+                return {
+                    'status': 'ERROR',
+                    'message': result.stderr.strip() if result.stderr else f'Failed to {action} {service_name}'
+                }
+        except subprocess.TimeoutExpired:
+            return {'status': 'ERROR', 'message': 'Command timeout'}
+        except Exception as e:
+            return {'status': 'ERROR', 'message': str(e)}
+
+    @staticmethod
+    def get_ssh_connections():
+        """Get active SSH connections."""
+        try:
+            result = subprocess.run(
+                ['ss', '-tunap'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+
+            connections = []
+            for line in result.stdout.split('\n'):
+                if 'ssh' in line.lower() or ':22' in line:
+                    connections.append(line)
+
+            return connections[:10] if connections else ['No SSH connections']
+        except Exception as e:
+            return [f'Error: {str(e)}']
+
+    @staticmethod
+    def get_system_info():
+        """Get detailed system information."""
+        try:
+            hostname = subprocess.run(
+                ['hostname'],
+                capture_output=True,
+                text=True,
+                timeout=2
+            ).stdout.strip()
+
+            kernel = subprocess.run(
+                ['uname', '-r'],
+                capture_output=True,
+                text=True,
+                timeout=2
+            ).stdout.strip()
+
+            return {
+                'hostname': hostname,
+                'kernel': kernel,
+            }
+        except Exception as e:
+            return {'error': str(e)}
+        """Get WireGuard peers with handshake info."""
+        try:
+            result = subprocess.run(
+                ['wg', 'show', 'wg0', 'peers'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            peers = []
+            if result.returncode == 0 and result.stdout.strip():
+                for peer in result.stdout.strip().split('\n'):
+                    if peer:
+                        peers.append(peer)
+
+                handshake_result = subprocess.run(
+                    ['wg', 'show', 'wg0', 'latest-handshakes'],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                if handshake_result.returncode == 0:
+                    handshakes = {}
+                    for line in handshake_result.stdout.strip().split('\n'):
+                        if line:
+                            parts = line.split('\t')
+                            if len(parts) == 2:
+                                peer_key = parts[0]
+                                timestamp = int(parts[1])
+                                time_ago = int(datetime.now().timestamp()) - timestamp
+                                handshakes[peer_key] = time_ago
+
+                    return {
+                        'status': 'OK',
+                        'peers': peers,
+                        'handshakes': handshakes
+                    }
+
+            return {
+                'status': 'OK',
+                'peers': peers if peers else [],
+                'handshakes': {}
+            }
+        except Exception as e:
+            return {
+                'status': 'ERROR',
+                'error': str(e)
+            }

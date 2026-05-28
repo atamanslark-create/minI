@@ -1,8 +1,13 @@
 import logging
+import subprocess
+import asyncio
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import Application, CommandHandler, MessageHandler, ConversationHandler, filters, ContextTypes
 from config import CONFIG
 from agent import SystemAgent
+from alerts import AlertManager
+from metrics import MetricsCollector
+from report import ReportBot
 from utils import format_bytes, format_status_response
 
 logging.basicConfig(
@@ -11,13 +16,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-MAIN_MENU, SERVICES_MENU, MANAGE_MENU = range(3)
+MAIN_MENU, SERVICES_MENU, MANAGE_MENU, WG_MENU = range(4)
 
 class VPSBot:
     def __init__(self, token, admin_ids):
         self.token = token
         self.admin_ids = admin_ids
         self.services = ['ssh', 'nginx', 'mysql', 'postgresql', 'redis-server']
+        self.app = None
+        self.alert_task = None
 
     def is_admin(self, user_id):
         return user_id in self.admin_ids
@@ -31,7 +38,9 @@ class VPSBot:
         reply_keyboard = [
             ['📊 Статус VPS', '💾 Диски'],
             ['🔥 Топ процессов', '🧩 Сервисы'],
-            ['🩺 Диагностика', '⚙️ Управление'],
+            ['📡 Пинг', '⚡ Спидтест'],
+            ['🔐 WireGuard', '📈 Статистика'],
+            ['ℹ️ Инфо', '👥 SSH', '⚙️ Управление'],
         ]
         await update.message.reply_text(
             '🤖 *Меню мониторинга VPS*\n\nВыберите действие:',
@@ -111,7 +120,144 @@ class VPSBot:
                 emoji = '✅' if status == 'active' else '❌'
                 response += f"{emoji} {service}: {status}\n"
 
+            response += "\n💡 *Для управления* нажмите на сервис:\n"
+            buttons = []
+            for service in self.services:
+                buttons.append([f"🔄 {service}"])
+            buttons.append(["◀️ Назад"])
+
+            await update.message.reply_text(
+                response.strip(),
+                reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True),
+                parse_mode='Markdown'
+            )
+        except Exception as e:
+            await update.message.reply_text(f'❌ Error: {str(e)}')
+
+        return MAIN_MENU
+
+    async def manage_service(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show service management options."""
+        text = update.message.text
+        service_name = text.split()[-1] if '🔄' in text else None
+
+        if not service_name:
+            return MAIN_MENU
+
+        context.user_data['selected_service'] = service_name
+
+        buttons = [
+            ['▶️ Запустить', '⏹️ Остановить'],
+            ['🔄 Перезагрузить', '❌ Отмена'],
+        ]
+
+        await update.message.reply_text(
+            f"🧩 *Управление сервисом: {service_name}*\n\nВыберите действие:",
+            reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True),
+            parse_mode='Markdown'
+        )
+
+        return MAIN_MENU
+
+    async def execute_service_action(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Execute service action."""
+        text = update.message.text
+        service = context.user_data.get('selected_service')
+
+        if not service or '❌' in text:
+            await update.message.reply_text('❌ Отмена')
+            return MAIN_MENU
+
+        action_map = {
+            '▶️': 'start',
+            '⏹️': 'stop',
+            '🔄': 'restart',
+        }
+
+        action = None
+        for emoji, act in action_map.items():
+            if emoji in text:
+                action = act
+                break
+
+        if not action:
+            return MAIN_MENU
+
+        try:
+            result = SystemAgent.manage_service(service, action)
+
+            if result['status'] == 'OK':
+                response = f"✅ {result['message']}"
+            else:
+                response = f"❌ {result['message']}"
+
+            await update.message.reply_text(response, parse_mode='Markdown')
+        except Exception as e:
+            await update.message.reply_text(f'❌ Error: {str(e)}')
+
+        return MAIN_MENU
+
+    async def system_info(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show system information."""
+        try:
+            info = SystemAgent.get_system_info()
+            uptime = SystemAgent.get_uptime()
+
+            response = f"""ℹ️ *Информация о системе*
+
+*Hostname:* {info.get('hostname', 'Unknown')}
+*Kernel:* {info.get('kernel', 'Unknown')}
+*Uptime:* {uptime}
+"""
             await update.message.reply_text(response.strip(), parse_mode='Markdown')
+        except Exception as e:
+            await update.message.reply_text(f'❌ Error: {str(e)}')
+
+        return MAIN_MENU
+
+    async def ssh_connections(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show active SSH connections."""
+        try:
+            connections = SystemAgent.get_ssh_connections()
+            response = "👥 *Active SSH connections*\n\n"
+
+            if connections and connections[0] != 'No SSH connections':
+                for conn in connections:
+                    if conn.strip():
+                        response += f"`{conn[:60]}`\n"
+            else:
+                response += "No active SSH connections"
+
+            await update.message.reply_text(response, parse_mode='Markdown')
+        except Exception as e:
+            await update.message.reply_text(f'❌ Error: {str(e)}')
+
+        return MAIN_MENU
+
+    async def statistics(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show system statistics for the last 24 hours."""
+        try:
+            stats = MetricsCollector.get_stats(hours=24)
+
+            if stats:
+                response = f"""📈 *Статистика (последние 24 часа)*
+
+*CPU:*
+├─ Среднее: {stats['cpu_avg']}%
+└─ Максимум: {stats['cpu_max']}%
+
+*RAM:*
+├─ Среднее: {stats['memory_avg']}%
+└─ Максимум: {stats['memory_max']}%
+
+*Диск:*
+├─ Среднее: {stats['disk_avg']}%
+└─ Максимум: {stats['disk_max']}%
+"""
+            else:
+                response = "📈 *Статистика*\n\nЕще нет данных. Приходите позже."
+
+            await update.message.reply_text(response, parse_mode='Markdown')
         except Exception as e:
             await update.message.reply_text(f'❌ Error: {str(e)}')
 
@@ -140,6 +286,145 @@ class VPSBot:
             await update.message.reply_text(f'❌ Error: {str(e)}')
 
         return MAIN_MENU
+
+    async def ping_internet(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Check internet connectivity."""
+        try:
+            await update.message.reply_text('📡 Проверка связи...')
+            ping_result = SystemAgent.ping_host()
+
+            if ping_result['status'] == 'OK':
+                response = f"✅ *Интернет доступен*\n\n{ping_result['message']}"
+            else:
+                response = f"❌ *Интернет недоступен*\n\n{ping_result['message']}"
+
+            await update.message.reply_text(response.strip(), parse_mode='Markdown')
+        except Exception as e:
+            await update.message.reply_text(f'❌ Error: {str(e)}')
+
+        return MAIN_MENU
+
+    async def speedtest_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Run speedtest."""
+        try:
+            await update.message.reply_text('⚡ *Спидтест может занять 30-60 секунд...*\n\n⏳ Пожалуйста, ждите...', parse_mode='Markdown')
+
+            result = subprocess.run(
+                ['/bin/sh', '-c', 'speedtest-cli --simple 2>/dev/null || speedtest-cli 2>/dev/null || echo "ERROR: not installed"'],
+                capture_output=True,
+                text=True,
+                timeout=120
+            )
+
+            if 'ERROR: not installed' in result.stdout or 'not installed' in result.stderr:
+                response = "⚠️ *speedtest-cli не установлен*\n\nУстановите в venv:\n`sudo /opt/mini-bot/venv/bin/pip install speedtest-cli`"
+                await update.message.reply_text(response, parse_mode='Markdown')
+            else:
+                # Parse both formats: --simple (3 numbers) and regular output
+                lines = [line.strip() for line in result.stdout.strip().split('\n') if line.strip()]
+
+                download, upload, ping = None, None, None
+
+                # Try to parse simple format (3 lines with numbers)
+                if len(lines) >= 3:
+                    try:
+                        download = float(lines[0])
+                        upload = float(lines[1])
+                        ping = float(lines[2])
+                    except ValueError:
+                        # Try to parse labeled format
+                        for line in lines:
+                            if 'Ping:' in line or 'ping' in line.lower():
+                                try:
+                                    ping = float(line.split()[1])
+                                except:
+                                    pass
+                            elif 'Download:' in line or 'download' in line.lower():
+                                try:
+                                    download = float(line.split()[1])
+                                except:
+                                    pass
+                            elif 'Upload:' in line or 'upload' in line.lower():
+                                try:
+                                    upload = float(line.split()[1])
+                                except:
+                                    pass
+
+                if download is not None and upload is not None and ping is not None:
+                    response = f"""⚡ *Результаты спидтеста*
+
+📥 Download: {download:.2f} Mbps
+📤 Upload: {upload:.2f} Mbps
+📡 Ping: {ping:.2f} ms
+"""
+                    await update.message.reply_text(response.strip(), parse_mode='Markdown')
+                else:
+                    await update.message.reply_text(f'❌ Ошибка парсинга:\n`{result.stdout[:200]}`', parse_mode='Markdown')
+
+        except subprocess.TimeoutExpired:
+            await update.message.reply_text('⏱️ Спидтест истёк по времени (> 120 сек)')
+        except Exception as e:
+            await update.message.reply_text(f'❌ Error: {str(e)}')
+
+        return MAIN_MENU
+
+    async def wireguard_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show WireGuard menu."""
+        reply_keyboard = [
+            ['🔐 WG статус', '👥 Peers'],
+            ['🩺 WG диагностика', '🔁 Рестарт WG'],
+            ['◀️ Назад'],
+        ]
+        await update.message.reply_text(
+            '🔐 *WireGuard*\n\nВыберите действие:',
+            reply_markup=ReplyKeyboardMarkup(reply_keyboard, resize_keyboard=True),
+            parse_mode='Markdown'
+        )
+        return WG_MENU
+
+    async def wireguard_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show WireGuard status."""
+        try:
+            wg_status = SystemAgent.get_wireguard_status()
+
+            if wg_status['active']:
+                response = f"🔐 *WireGuard статус: АКТИВЕН*\n\n```\n{wg_status['output']}\n```"
+            else:
+                response = f"🔐 *WireGuard статус: НЕАКТИВЕН*\n\n{wg_status['output']}"
+
+            await update.message.reply_text(response, parse_mode='Markdown')
+        except Exception as e:
+            await update.message.reply_text(f'❌ Error: {str(e)}')
+
+        return WG_MENU
+
+    async def wireguard_peers(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show WireGuard peers."""
+        try:
+            peers_data = SystemAgent.get_wireguard_peers()
+
+            if peers_data['status'] == 'OK':
+                if peers_data['peers']:
+                    response = "👥 *WireGuard Peers*\n\n"
+                    for peer in peers_data['peers']:
+                        response += f"`{peer[:20]}...`\n"
+
+                    if peers_data.get('handshakes'):
+                        response += "\n*Последний handshake:*\n"
+                        for peer_key, time_ago in list(peers_data['handshakes'].items())[:5]:
+                            minutes_ago = time_ago // 60
+                            response += f"{peer_key[:15]}...: {minutes_ago} мин назад\n"
+                else:
+                    response = "👥 *WireGuard Peers*\n\nNет активных peers"
+
+                await update.message.reply_text(response, parse_mode='Markdown')
+            else:
+                await update.message.reply_text(f"❌ {peers_data.get('error', 'Unknown error')}")
+
+        except Exception as e:
+            await update.message.reply_text(f'❌ Error: {str(e)}')
+
+        return WG_MENU
 
     async def manage_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show management menu."""
@@ -198,8 +483,28 @@ class VPSBot:
             return await self.top_processes(update, context)
         elif text == '🧩 Сервисы':
             return await self.services_menu(update, context)
+        elif text == '📡 Пинг':
+            return await self.ping_internet(update, context)
+        elif text == '⚡ Спидтест':
+            return await self.speedtest_menu(update, context)
+        elif text == '🔐 WireGuard':
+            return await self.wireguard_menu(update, context)
+        elif text == '🔐 WG статус':
+            return await self.wireguard_status(update, context)
+        elif text == '👥 Peers':
+            return await self.wireguard_peers(update, context)
+        elif text == '📈 Статистика':
+            return await self.statistics(update, context)
+        elif text == 'ℹ️ Инфо':
+            return await self.system_info(update, context)
+        elif text == '👥 SSH':
+            return await self.ssh_connections(update, context)
         elif text == '🩺 Диагностика':
             return await self.diagnostics(update, context)
+        elif '🔄' in text:
+            return await self.manage_service(update, context)
+        elif text in ['▶️ Запустить', '⏹️ Остановить', '🔄 Перезагрузить']:
+            return await self.execute_service_action(update, context)
         elif text == '⚙️ Управление':
             return await self.manage_menu(update, context)
         elif text == '🧨 Удалить бота с VPS':
@@ -208,20 +513,68 @@ class VPSBot:
             return await self.start(update, context)
         elif text == '✅ Да, удалить':
             return await self.confirm_uninstall(update, context)
-        elif text == '❌ Отмена':
+        elif text == '❌ Отмена' or text == '❌ Отмена.':
             return await self.start(update, context)
 
         return MAIN_MENU
 
+    async def monitor_alerts(self):
+        """Background task to monitor system and send alerts."""
+        while True:
+            try:
+                alerts = AlertManager.check_alerts()
+
+                for alert in alerts:
+                    # Only send critical and warning alerts
+                    if alert['severity'] in ['critical', 'warning', 'info']:
+                        message = AlertManager.format_alert(alert)
+
+                        for admin_id in self.admin_ids:
+                            try:
+                                await self.app.bot.send_message(
+                                    chat_id=admin_id,
+                                    text=message,
+                                    parse_mode='Markdown'
+                                )
+                            except Exception as e:
+                                logger.error(f"Failed to send alert to {admin_id}: {str(e)}")
+
+                # Check every 60 seconds
+                await asyncio.sleep(60)
+
+            except Exception as e:
+                logger.error(f"Alert monitor error: {str(e)}")
+                await asyncio.sleep(60)
+
+    async def post_init(self, app):
+        """Start background tasks after application initialization."""
+        self.app = app
+        self.alert_task = asyncio.create_task(self.monitor_alerts())
+        logger.info('Alert monitor started')
+
+    async def pre_shutdown(self, app):
+        """Cleanup before shutdown."""
+        if self.alert_task:
+            self.alert_task.cancel()
+            try:
+                await self.alert_task
+            except asyncio.CancelledError:
+                pass
+
     def run(self):
         """Run the bot."""
         app = Application.builder().token(self.token).build()
+
+        # Add callbacks for lifecycle events
+        app.post_init = self.post_init
+        app.pre_shutdown = self.pre_shutdown
 
         conv_handler = ConversationHandler(
             entry_points=[CommandHandler('start', self.start)],
             states={
                 MAIN_MENU: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message)],
                 MANAGE_MENU: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message)],
+                WG_MENU: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message)],
             },
             fallbacks=[CommandHandler('start', self.start)],
         )
@@ -229,6 +582,18 @@ class VPSBot:
         app.add_handler(conv_handler)
 
         logger.info('Bot started')
+
+        # Send startup report
+        try:
+            system_info = SystemAgent.get_system_info()
+            ReportBot.send_report(
+                "Bot Startup",
+                f"mini-bot успешно запущен\n\n*Hostname:* {system_info.get('hostname', 'Unknown')}\n*Kernel:* {system_info.get('kernel', 'Unknown')}",
+                "success"
+            )
+        except Exception as e:
+            logger.warning(f"Could not send startup report: {e}")
+
         app.run_polling()
 
 if __name__ == '__main__':
