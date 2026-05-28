@@ -41,7 +41,7 @@ mkdir -p "$CONFIG_DIR"
 
 # Copy project files
 echo "📋 Copying project files..."
-cp bot.py agent.py config.py utils.py alerts.py metrics.py report.py network_checks.py glados_client.py requirements.txt "$INSTALL_DIR/"
+cp bot.py agent.py config.py utils.py alerts.py alerts_extended.py metrics.py report.py network_checks.py glados_client.py requirements.txt "$INSTALL_DIR/"
 
 # Create virtual environment
 echo "🐍 Creating Python virtual environment..."
@@ -67,16 +67,39 @@ pip install speedtest-cli requests -q 2>/dev/null || true
 # Create config file if it doesn't exist
 if [ ! -f "$CONFIG_DIR/config.yaml" ]; then
     echo "⚙️ Creating config file..."
+
+    # Prompt for mini-bot configuration
+    read -p "📌 Enter mini-bot Telegram token: " BOT_TOKEN
+    read -p "📌 Enter admin chat IDs (comma-separated): " ADMIN_IDS
+
+    # Prompt for GLaDoS integration (optional)
+    read -p "🤖 Enter GLaDoS bot token (optional, press Enter to skip): " GLADOS_TOKEN
+    read -p "🤖 Enter GLaDoS owner ID (optional, press Enter to skip): " GLADOS_OWNER_ID
+
+    # Create config with provided values
     cat > "$CONFIG_DIR/config.yaml" << EOF
 # mini-bot configuration
-telegram_token: YOUR_BOT_TOKEN_HERE
-admin_chat_ids: YOUR_CHAT_IDS_HERE
+telegram_token: $BOT_TOKEN
+admin_chat_ids: $ADMIN_IDS
 
-# Example:
-# telegram_token: 123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11
-# admin_chat_ids: 12345678,87654321
+# ==================== GLaDoS Integration (Optional) ====================
+# Connect mini-bot to GLaDoS master bot for centralized control
 EOF
-    echo "⚠️  Please edit $CONFIG_DIR/config.yaml with your bot token and admin chat IDs"
+
+    if [ ! -z "$GLADOS_TOKEN" ] && [ ! -z "$GLADOS_OWNER_ID" ]; then
+        cat >> "$CONFIG_DIR/config.yaml" << EOF
+
+glados_token: $GLADOS_TOKEN
+glados_owner_id: $GLADOS_OWNER_ID
+EOF
+        echo "✅ GLaDoS integration configured"
+    else
+        echo "⏭️ GLaDoS integration skipped (can be added later)"
+    fi
+
+    echo "✅ Config file created at $CONFIG_DIR/config.yaml"
+else
+    echo "⚠️  Config file already exists at $CONFIG_DIR/config.yaml"
 fi
 
 # Create systemd service file
@@ -112,36 +135,64 @@ echo ""
 echo "✅ Installation complete!"
 echo ""
 echo "📌 Next steps:"
-echo "1. Edit $CONFIG_DIR/config.yaml with your Telegram bot token and admin chat IDs"
-echo "2. Run: systemctl start mini-bot"
-echo "3. Check status: systemctl status mini-bot"
+echo "1. systemctl start mini-bot"
+echo "2. Check status: systemctl status mini-bot"
+echo "3. Verify logs: journalctl -u mini-bot -n 20"
 echo ""
 
-# Send installation report
-echo "📨 Sending installation report..."
-HOSTNAME=$(hostname)
-PYTHON_VERSION=$($VENV_DIR/bin/python --version 2>&1)
-INSTALLED_PACKAGES=$($VENV_DIR/bin/pip list 2>/dev/null | wc -l)
+# Start the service
+echo "🚀 Starting mini-bot service..."
+systemctl start mini-bot
+sleep 3
 
-REPORT="
-Hostname: $HOSTNAME
-Python: $PYTHON_VERSION
-Packages installed: $INSTALLED_PACKAGES
-Installation directory: $INSTALL_DIR
-Config directory: $CONFIG_DIR
-"
+# Check if service started successfully
+if systemctl is-active --quiet mini-bot; then
+    echo "✅ Service started successfully"
 
-python3 << PYTHON_SCRIPT
-import sys
-sys.path.insert(0, '$INSTALL_DIR')
-try:
-    from report import ReportBot
-    ReportBot.send_install_report(
-        "$HOSTNAME",
-        "success",
-        "$REPORT"
-    )
-    print("✅ Report sent successfully")
-except Exception as e:
-    print(f"⚠️ Could not send report: {e}")
-PYTHON_SCRIPT
+    # Check for GLaDoS integration
+    if journalctl -u mini-bot -n 10 | grep -q "GLaDoS client initialized"; then
+        echo "✅ GLaDoS integration is ACTIVE"
+        echo "   - Hourly reports will be sent to GLaDoS"
+        echo "   - Remote command execution is enabled"
+        echo "   - Critical alerts will be sent to GLaDoS"
+    else
+        echo "⚠️  GLaDoS integration is NOT configured"
+        echo "   - To enable, add glados_token and glados_owner_id to $CONFIG_DIR/config.yaml"
+        echo "   - Then restart: systemctl restart mini-bot"
+    fi
+else
+    echo "❌ Failed to start service"
+    echo "   Check logs: journalctl -u mini-bot -n 50"
+    exit 1
+fi
+
+echo ""
+
+# Print summary
+echo "════════════════════════════════════════════════════════════════"
+echo "📊 INSTALLATION SUMMARY"
+echo "════════════════════════════════════════════════════════════════"
+echo ""
+echo "📁 Installation Directory: $INSTALL_DIR"
+echo "⚙️  Config Directory:      $CONFIG_DIR"
+echo "🐍 Python Virtual Env:    $VENV_DIR"
+echo "🔧 Service File:          $SERVICE_FILE"
+echo ""
+echo "📦 Features:"
+echo "   ✅ VPS Monitoring (CPU, RAM, Disk)"
+echo "   ✅ Service Management (SSH, Nginx, MySQL, PostgreSQL, Redis, Docker)"
+echo "   ✅ Network Monitoring (Ping, Ports, Speedtest, WireGuard)"
+echo "   ✅ Smart Alert System (with cooldown filtering)"
+if [ ! -z "$GLADOS_TOKEN" ]; then
+    echo "   ✅ GLaDoS Integration (hourly reports, remote commands)"
+fi
+echo ""
+echo "📌 Useful Commands:"
+echo "   systemctl status mini-bot          - Check service status"
+echo "   systemctl stop mini-bot            - Stop service"
+echo "   systemctl restart mini-bot         - Restart service"
+echo "   journalctl -u mini-bot -f          - View live logs"
+echo "   nano $CONFIG_DIR/config.yaml       - Edit configuration"
+echo ""
+echo "════════════════════════════════════════════════════════════════"
+echo ""
