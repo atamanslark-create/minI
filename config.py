@@ -33,6 +33,12 @@ def load_config():
     else:
         config['admin_chat_ids'] = admin_ids
 
+    # GLaDoS integration (optional)
+    config['glados_token'] = os.getenv('GLADOS_BOT_TOKEN', config.get('glados_token'))
+    config['glados_owner_id'] = os.getenv('GLADOS_OWNER_ID', config.get('glados_owner_id'))
+    if config['glados_owner_id'] and isinstance(config['glados_owner_id'], str):
+        config['glados_owner_id'] = int(config['glados_owner_id'])
+
     if not config.get('telegram_token'):
         raise ValueError("TELEGRAM_BOT_TOKEN not found in config or environment variables")
 

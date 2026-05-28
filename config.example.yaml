@@ -6,6 +6,18 @@ telegram_token: 123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11
 # Admin chat IDs (comma-separated, get from @userinfobot)
 admin_chat_ids: 12345678,87654321
 
+# ==================== GLaDoS Integration (Optional) ====================
+# Connect mini-bot to GLaDoS master bot for centralized control
+
+# GLaDoS bot token (same as telegram_token for GLaDoS)
+glados_token: 9876543:ZYX-CBA9876fedcba543w2v1u098ZYX
+
+# GLaDoS owner chat ID (where hourly reports will be sent)
+glados_owner_id: 7774398077
+
+# ========================================================================
 # You can also use environment variables:
 # TELEGRAM_BOT_TOKEN - for telegram_token
 # ADMIN_CHAT_IDS - for admin_chat_ids
+# GLADOS_BOT_TOKEN - for glados_token
+# GLADOS_OWNER_ID - for glados_owner_id

@@ -9,6 +9,7 @@ from alerts import AlertManager
 from metrics import MetricsCollector
 from report import ReportBot
 from utils import format_bytes, format_status_response
+from glados_client import GLaDosClient
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -19,7 +20,7 @@ logger = logging.getLogger(__name__)
 MAIN_MENU, SERVICES_MENU, MANAGE_MENU, WG_MENU = range(4)
 
 class VPSBot:
-    def __init__(self, token, admin_ids):
+    def __init__(self, token, admin_ids, glados_token=None, glados_owner_id=None):
         self.token = token
         self.admin_ids = admin_ids
         # Service name variations to try
@@ -34,6 +35,16 @@ class VPSBot:
         self.services = self._get_available_services()
         self.app = None
         self.alert_task = None
+        self.glados_report_task = None
+
+        # GLaDoS integration
+        self.glados_client = None
+        if glados_token and glados_owner_id:
+            try:
+                self.glados_client = GLaDosClient(glados_token, glados_owner_id)
+                logger.info("GLaDoS client initialized")
+            except Exception as e:
+                logger.warning(f"Failed to initialize GLaDoS client: {e}")
 
     def _get_available_services(self):
         """Get only services that exist on the system."""
@@ -684,11 +695,73 @@ class VPSBot:
                 logger.error(f"Alert monitor error: {str(e)}")
                 await asyncio.sleep(60)
 
+    async def send_hourly_report_to_glados(self):
+        """Send system status report to GLaDoS every 60 minutes."""
+        if not self.glados_client:
+            return
+
+        while True:
+            try:
+                await asyncio.sleep(3600)  # Wait 60 minutes
+
+                # Collect system metrics
+                cpu = SystemAgent.get_cpu_status()
+                memory = SystemAgent.get_memory_status()
+                uptime = SystemAgent.get_uptime()
+                disks = SystemAgent.get_disk_status()
+                system_info = SystemAgent.get_system_info()
+
+                # Build report content
+                content_lines = [
+                    f"📊 Статус системы",
+                    f"",
+                    f"<b>CPU:</b> {cpu['percent']}% ({cpu['count']} cores)",
+                    f"<b>RAM:</b> {memory['percent']}% ({format_bytes(memory['used'])} / {format_bytes(memory['total'])})",
+                    f"<b>Uptime:</b> {uptime}",
+                ]
+
+                # Add disk info
+                if disks:
+                    content_lines.append(f"")
+                    content_lines.append(f"<b>Диски:</b>")
+                    for disk in disks:
+                        content_lines.append(f"  {disk['device']}: {disk['percent']}%")
+
+                # Get service status
+                services_status = SystemAgent.get_services_status(self.services)
+                if services_status:
+                    content_lines.append(f"")
+                    content_lines.append(f"<b>Сервисы:</b>")
+                    for service, status in services_status.items():
+                        emoji = '✅' if status == 'active' else '❌'
+                        content_lines.append(f"  {emoji} {service}: {status}")
+
+                content = "\n".join(content_lines)
+                details = {
+                    "Hostname": system_info.get('hostname', 'Unknown'),
+                    "Kernel": system_info.get('kernel', 'Unknown'),
+                }
+
+                await self.glados_client.send_report(
+                    title="Hourly Status Report",
+                    content=content,
+                    details=details
+                )
+
+            except Exception as e:
+                logger.error(f"Failed to send hourly report to GLaDoS: {e}")
+                # Try again in 1 minute if error occurs
+                await asyncio.sleep(60)
+
     async def post_init(self, app):
         """Start background tasks after application initialization."""
         self.app = app
         self.alert_task = asyncio.create_task(self.monitor_alerts())
         logger.info('Alert monitor started')
+
+        if self.glados_client:
+            self.glados_report_task = asyncio.create_task(self.send_hourly_report_to_glados())
+            logger.info('GLaDoS hourly reporting started')
 
     async def pre_shutdown(self, app):
         """Cleanup before shutdown."""
@@ -698,6 +771,16 @@ class VPSBot:
                 await self.alert_task
             except asyncio.CancelledError:
                 pass
+
+        if self.glados_report_task:
+            self.glados_report_task.cancel()
+            try:
+                await self.glados_report_task
+            except asyncio.CancelledError:
+                pass
+
+        if self.glados_client:
+            await self.glados_client.close()
 
     def run(self):
         """Run the bot."""
@@ -735,5 +818,10 @@ class VPSBot:
         app.run_polling()
 
 if __name__ == '__main__':
-    bot = VPSBot(CONFIG['telegram_token'], CONFIG['admin_chat_ids'])
+    bot = VPSBot(
+        CONFIG['telegram_token'],
+        CONFIG['admin_chat_ids'],
+        glados_token=CONFIG.get('glados_token'),
+        glados_owner_id=CONFIG.get('glados_owner_id')
+    )
     bot.run()
