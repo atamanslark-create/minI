@@ -160,20 +160,33 @@ class SystemAgent:
 
     @staticmethod
     def ping_host(host='8.8.8.8', count=3, timeout=4):
-        """Ping a host to check internet connectivity using socket."""
+        """Check internet connectivity using DNS lookup."""
         import socket
         try:
-            socket.create_connection((host, 80), timeout=timeout)
+            socket.setdefaulttimeout(timeout)
+            socket.gethostbyname(host)
             return {
                 'status': 'OK',
                 'host': host,
-                'message': f'{host} is reachable'
+                'message': f'✅ Интернет доступен ({host})'
             }
-        except (socket.timeout, socket.error):
+        except socket.gaierror:
             return {
                 'status': 'FAILED',
                 'host': host,
-                'message': f'Cannot reach {host}'
+                'message': f'❌ DNS недоступен (не могу разрешить {host})'
+            }
+        except socket.timeout:
+            return {
+                'status': 'FAILED',
+                'host': host,
+                'message': f'❌ Timeout при запросе к {host}'
+            }
+        except Exception as e:
+            return {
+                'status': 'FAILED',
+                'host': host,
+                'message': f'❌ Ошибка: {str(e)}'
             }
 
     @staticmethod
